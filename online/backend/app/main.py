@@ -36,20 +36,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Register API v1 routes
-prefix = settings.API_V1_PREFIX
-app.include_router(auth.router, prefix=prefix)
-app.include_router(documents.router, prefix=prefix)
-app.include_router(recipients.router, prefix=prefix)
-app.include_router(distribution.router, prefix=prefix)
-app.include_router(investigation.router, prefix=prefix)
-app.include_router(audit.router, prefix=prefix)
+# Register API v1 routes (register under both /api/v1 and /v1 for Vercel and local compatibility)
+for p in ["/api/v1", "/v1"]:
+    app.include_router(auth.router, prefix=p)
+    app.include_router(documents.router, prefix=p)
+    app.include_router(recipients.router, prefix=p)
+    app.include_router(distribution.router, prefix=p)
+    app.include_router(investigation.router, prefix=p)
+    app.include_router(audit.router, prefix=p)
+
+
+@app.middleware("http")
+async def normalize_vercel_path(request, call_next):
+    """Normalize Vercel rewrite paths so /api/index.py prefixes never break route matching."""
+    path = request.scope.get("path", "")
+    for prefix in ["/api/index.py", "/api/index"]:
+        if path.startswith(prefix):
+            new_path = path[len(prefix):]
+            if not new_path:
+                new_path = "/"
+            request.scope["path"] = new_path
+            break
+    return await call_next(request)
 
 
 from fastapi.responses import HTMLResponse
 
 # Health check
 @app.get("/health")
+@app.get("/api/health")
 def health_check():
     return {
         "status": "healthy",
@@ -61,12 +76,16 @@ def health_check():
 
 def get_frontend_html() -> str:
     candidates = [
+        settings.BASE_DIR / "public" / "index.html",
         settings.BASE_DIR / "online" / "frontend" / "public" / "index.html",
         settings.BASE_DIR / "api" / "index.html",
+        Path(__file__).resolve().parent.parent.parent.parent / "public" / "index.html",
         Path(__file__).resolve().parent.parent.parent.parent / "online" / "frontend" / "public" / "index.html",
         Path(__file__).resolve().parent.parent.parent.parent / "api" / "index.html",
+        Path.cwd() / "public" / "index.html",
         Path.cwd() / "online" / "frontend" / "public" / "index.html",
         Path.cwd() / "api" / "index.html",
+        Path("/var/task/public/index.html"),
         Path("/var/task/online/frontend/public/index.html"),
         Path("/var/task/api/index.html"),
     ]
@@ -80,6 +99,8 @@ def get_frontend_html() -> str:
 
 
 @app.get("/", response_class=HTMLResponse)
+@app.get("/api", response_class=HTMLResponse)
+@app.get("/api/", response_class=HTMLResponse)
 def root_view():
     """Serve the single-page application frontend."""
     return HTMLResponse(content=get_frontend_html(), status_code=200)
