@@ -46,6 +46,8 @@ app.include_router(investigation.router, prefix=prefix)
 app.include_router(audit.router, prefix=prefix)
 
 
+from fastapi.responses import HTMLResponse
+
 # Health check
 @app.get("/health")
 def health_check():
@@ -57,7 +59,36 @@ def health_check():
     }
 
 
+def get_frontend_html() -> str:
+    candidates = [
+        settings.BASE_DIR / "online" / "frontend" / "public" / "index.html",
+        settings.BASE_DIR / "api" / "index.html",
+        Path(__file__).resolve().parent.parent.parent.parent / "online" / "frontend" / "public" / "index.html",
+        Path(__file__).resolve().parent.parent.parent.parent / "api" / "index.html",
+        Path.cwd() / "online" / "frontend" / "public" / "index.html",
+        Path.cwd() / "api" / "index.html",
+        Path("/var/task/online/frontend/public/index.html"),
+        Path("/var/task/api/index.html"),
+    ]
+    for c in candidates:
+        try:
+            if c.is_file():
+                return c.read_text(encoding="utf-8")
+        except Exception:
+            continue
+    return "<h1>DocFortress Secure Document Distribution</h1><p>API is active.</p>"
+
+
+@app.get("/", response_class=HTMLResponse)
+def root_view():
+    """Serve the single-page application frontend."""
+    return HTMLResponse(content=get_frontend_html(), status_code=200)
+
+
 # Mount web client UI if directory exists
 frontend_dir = settings.BASE_DIR / "online" / "frontend" / "public"
 if frontend_dir.is_dir():
-    app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
+    try:
+        app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
+    except Exception:
+        pass

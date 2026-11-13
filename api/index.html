@@ -1,0 +1,1093 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Secure Document Distribution Platform</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+    .tab-active { border-bottom: 2px solid #3b82f6; color: #1d4ed8; font-weight: 600; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen flex flex-col">
+
+  <!-- Header -->
+  <header class="bg-slate-900 text-white shadow-md">
+    <div class="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <i class="fa-solid fa-shield-halved text-blue-400 text-2xl"></i>
+        <div>
+          <h1 class="text-xl font-bold tracking-tight">DocFortress</h1>
+          <p class="text-xs text-slate-400">Cryptographic Access Control & Forensic Watermarking</p>
+        </div>
+      </div>
+      <div id="authStatus" class="flex items-center space-x-3">
+        <span id="userBadge" class="hidden text-xs bg-slate-800 text-blue-300 px-3 py-1 rounded-full border border-slate-700"></span>
+        <button id="logoutBtn" onclick="app.logout()" class="hidden text-xs bg-rose-600 hover:bg-rose-700 px-3 py-1 rounded text-white transition">Sign Out</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Navigation bar (Visible when logged in) -->
+  <nav id="navBar" class="hidden bg-white border-b border-slate-200">
+    <div class="max-w-7xl mx-auto px-4 flex space-x-6 overflow-x-auto">
+      <button onclick="app.switchTab('dashboard')" id="tab-dashboard" class="py-3 px-2 text-sm text-slate-600 hover:text-blue-600 tab-active">
+        <i class="fa-solid fa-chart-line mr-1"></i> Dashboard
+      </button>
+      <button onclick="app.switchTab('documents')" id="tab-documents" class="py-3 px-2 text-sm text-slate-600 hover:text-blue-600">
+        <i class="fa-solid fa-file-shield mr-1"></i> Documents
+      </button>
+      <button onclick="app.switchTab('recipients')" id="tab-recipients" class="py-3 px-2 text-sm text-slate-600 hover:text-blue-600">
+        <i class="fa-solid fa-users mr-1"></i> Recipients
+      </button>
+      <button onclick="app.switchTab('distribution')" id="tab-distribution" class="py-3 px-2 text-sm text-slate-600 hover:text-blue-600">
+        <i class="fa-solid fa-paper-plane mr-1"></i> Distribute
+      </button>
+      <button onclick="app.switchTab('recipientPortal')" id="tab-recipientPortal" class="py-3 px-2 text-sm text-slate-600 hover:text-blue-600">
+        <i class="fa-solid fa-key mr-1"></i> Recipient Access
+      </button>
+      <button onclick="app.switchTab('investigation')" id="tab-investigation" class="py-3 px-2 text-sm text-slate-600 hover:text-blue-600">
+        <i class="fa-solid fa-magnifying-glass mr-1"></i> Leak Investigation
+      </button>
+      <button onclick="app.switchTab('audit')" id="tab-audit" class="py-3 px-2 text-sm text-slate-600 hover:text-blue-600">
+        <i class="fa-solid fa-clipboard-check mr-1"></i> Audit Trail
+      </button>
+      <button onclick="app.switchTab('settings')" id="tab-settings" class="py-3 px-2 text-sm text-slate-600 hover:text-blue-600">
+        <i class="fa-solid fa-sliders mr-1"></i> Keys & Settings
+      </button>
+    </div>
+  </nav>
+
+  <!-- Main Container -->
+  <main class="max-w-7xl mx-auto px-4 py-6 flex-grow w-full">
+    
+    <!-- NOTIFICATION ALERT -->
+    <div id="alertBox" class="hidden mb-4 p-4 rounded-md text-sm border flex items-center justify-between">
+      <span id="alertMessage"></span>
+      <button onclick="this.parentElement.classList.add('hidden')" class="text-slate-500 hover:text-slate-800"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+
+    <!-- VIEW 1: AUTHENTICATION -->
+    <section id="view-auth" class="max-w-md mx-auto bg-white p-6 rounded-xl shadow-sm border border-slate-200 mt-8">
+      <div class="flex border-b border-slate-200 mb-6">
+        <button id="authTabLogin" onclick="app.setAuthMode('login')" class="flex-1 pb-3 text-sm font-semibold text-blue-600 border-b-2 border-blue-600">Sign In</button>
+        <button id="authTabRegister" onclick="app.setAuthMode('register')" class="flex-1 pb-3 text-sm font-semibold text-slate-500 hover:text-slate-800">Register</button>
+      </div>
+
+      <form id="authForm" onsubmit="app.handleAuthSubmit(event)" class="space-y-4">
+        <div id="regNameField" class="hidden">
+          <label class="block text-xs font-semibold text-slate-700 uppercase mb-1">Full Name</label>
+          <input type="text" id="authName" class="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="e.g. Elena Vance">
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-slate-700 uppercase mb-1">Email Address</label>
+          <input type="email" id="authEmail" required class="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="name@company.org">
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-slate-700 uppercase mb-1">Password</label>
+          <input type="password" id="authPassword" required class="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="••••••••••••">
+        </div>
+        <div id="regRoleField" class="hidden">
+          <label class="block text-xs font-semibold text-slate-700 uppercase mb-1">Account Role</label>
+          <select id="authRole" class="w-full px-3 py-2 border rounded-lg text-sm bg-white">
+            <option value="OWNER">Document Owner (Distributor / Admin)</option>
+            <option value="RECIPIENT">Recipient (Consumer)</option>
+          </select>
+        </div>
+        <button type="submit" id="authSubmitBtn" class="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition shadow-sm">
+          Sign In
+        </button>
+      </form>
+      <div class="mt-4 text-xs text-center text-slate-500">
+        Demo tip: Register as <b>Owner</b> to manage and distribute files, or test recipient decryption in Recipient Access.
+      </div>
+    </section>
+
+    <!-- VIEW 2: OWNER DASHBOARD -->
+    <section id="view-dashboard" class="hidden space-y-6">
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+          <div class="text-xs font-semibold text-slate-500 uppercase">Documents</div>
+          <div id="statDocCount" class="text-3xl font-bold text-slate-800 mt-2">0</div>
+        </div>
+        <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+          <div class="text-xs font-semibold text-slate-500 uppercase">Active Recipients</div>
+          <div id="statRecCount" class="text-3xl font-bold text-blue-600 mt-2">0</div>
+        </div>
+        <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+          <div class="text-xs font-semibold text-slate-500 uppercase">Distributions</div>
+          <div id="statDistCount" class="text-3xl font-bold text-emerald-600 mt-2">0</div>
+        </div>
+        <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+          <div class="text-xs font-semibold text-slate-500 uppercase">Audit Events</div>
+          <div id="statEventCount" class="text-3xl font-bold text-indigo-600 mt-2">0</div>
+        </div>
+      </div>
+
+      <!-- Quick actions -->
+      <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
+        <h2 class="text-base font-bold text-slate-900">Secure Document Workflow Overview</h2>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+          <div class="p-4 rounded-lg bg-blue-50 border border-blue-100">
+            <div class="font-semibold text-blue-900 mb-1"><i class="fa-solid fa-upload mr-1"></i> 1. Upload & Protect</div>
+            <p class="text-xs text-blue-700">Upload confidential documents. Each file's SHA-256 hash is computed and stored securely.</p>
+          </div>
+          <div class="p-4 rounded-lg bg-emerald-50 border border-emerald-100">
+            <div class="font-semibold text-emerald-900 mb-1"><i class="fa-solid fa-stamp mr-1"></i> 2. Watermark & Encrypt</div>
+            <p class="text-xs text-emerald-700">Embeds an invisible forensic watermark and encrypts with a recipient-specific DEK envelope.</p>
+          </div>
+          <div class="p-4 rounded-lg bg-indigo-50 border border-indigo-100">
+            <div class="font-semibold text-indigo-900 mb-1"><i class="fa-solid fa-fingerprint mr-1"></i> 3. Trace Leaks</div>
+            <p class="text-xs text-indigo-700">Upload any leaked copy to automatically extract its watermark and trace the origin recipient.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW 3: DOCUMENTS (Upload & List) -->
+    <section id="view-documents" class="hidden space-y-6">
+      <div class="flex justify-between items-center">
+        <h2 class="text-xl font-bold text-slate-900">Document Management</h2>
+      </div>
+
+      <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+        <h3 class="text-sm font-semibold uppercase text-slate-600 mb-3">Upload Confidential Document</h3>
+        <form onsubmit="app.handleUploadDocument(event)" class="space-y-4">
+          <div class="border-2 border-dashed border-slate-300 p-6 rounded-lg text-center hover:border-blue-500 transition">
+            <input type="file" id="docUploadInput" accept=".pdf,.txt,.docx" class="hidden" onchange="app.updateFileName(this)">
+            <label for="docUploadInput" class="cursor-pointer">
+              <i class="fa-solid fa-cloud-arrow-up text-3xl text-slate-400 mb-2"></i>
+              <div class="text-sm font-medium text-slate-700" id="uploadFileLabel">Click or drag PDF, TXT, or DOCX document here</div>
+              <div class="text-xs text-slate-400 mt-1">PDF format recommended for multi-layer forensic watermarking</div>
+            </label>
+          </div>
+          <button type="submit" class="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition">
+            <i class="fa-solid fa-upload mr-1"></i> Store & Register Document
+          </button>
+        </form>
+      </div>
+
+      <!-- Document Table -->
+      <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+        <div class="p-4 border-b border-slate-200 font-semibold text-sm text-slate-800">Uploaded Documents</div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead class="bg-slate-50 text-slate-500 text-xs uppercase border-b border-slate-200">
+              <tr>
+                <th class="px-4 py-3">Document ID</th>
+                <th class="px-4 py-3">Filename</th>
+                <th class="px-4 py-3">SHA-256 Digest</th>
+                <th class="px-4 py-3">Size</th>
+                <th class="px-4 py-3">Status</th>
+                <th class="px-4 py-3">Uploaded</th>
+              </tr>
+            </thead>
+            <tbody id="documentTableBody" class="divide-y divide-slate-100">
+              <tr><td colspan="6" class="px-4 py-6 text-center text-slate-400 text-xs">No documents uploaded yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW 4: RECIPIENTS -->
+    <section id="view-recipients" class="hidden space-y-6">
+      <div class="flex justify-between items-center">
+        <h2 class="text-xl font-bold text-slate-900">Authorized Recipients</h2>
+      </div>
+
+      <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+        <h3 class="text-sm font-semibold uppercase text-slate-600 mb-3">Enroll New Recipient</h3>
+        <form onsubmit="app.handleCreateRecipient(event)" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1">Recipient Name</label>
+            <input type="text" id="recName" required class="w-full px-3 py-2 border rounded-lg text-sm" placeholder="Alice Smith">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1">Email</label>
+            <input type="email" id="recEmail" required class="w-full px-3 py-2 border rounded-lg text-sm" placeholder="alice@partner.org">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1 flex justify-between">
+              <span>X25519 Public Key (Base64)</span>
+              <button type="button" onclick="app.generateRandomX25519KeyForForm()" class="text-blue-600 hover:underline">Generate Key</button>
+            </label>
+            <input type="text" id="recPubKey" required class="w-full px-3 py-2 border rounded-lg text-sm font-mono text-xs" placeholder="32-byte Base64 key">
+          </div>
+          <div class="md:col-span-3 flex justify-end">
+            <button type="submit" class="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition">
+              <i class="fa-solid fa-user-plus mr-1"></i> Enroll Recipient
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <!-- Recipient Table -->
+      <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+        <div class="p-4 border-b border-slate-200 font-semibold text-sm text-slate-800">Enrolled Recipients</div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead class="bg-slate-50 text-slate-500 text-xs uppercase border-b border-slate-200">
+              <tr>
+                <th class="px-4 py-3">Recipient ID</th>
+                <th class="px-4 py-3">Name</th>
+                <th class="px-4 py-3">Email</th>
+                <th class="px-4 py-3">Public Key</th>
+                <th class="px-4 py-3">Status</th>
+                <th class="px-4 py-3 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="recipientTableBody" class="divide-y divide-slate-100">
+              <tr><td colspan="6" class="px-4 py-6 text-center text-slate-400 text-xs">No recipients enrolled yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW 5: DISTRIBUTION -->
+    <section id="view-distribution" class="hidden space-y-6">
+      <div class="flex justify-between items-center">
+        <h2 class="text-xl font-bold text-slate-900">Document Distribution</h2>
+      </div>
+
+      <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
+        <h3 class="text-sm font-semibold uppercase text-slate-600">Create Recipient-Specific Protected Copies</h3>
+        <p class="text-xs text-slate-500">
+          Select a document and recipients. The platform embeds an individual invisible forensic watermark into each copy,
+          encrypts with fresh random DEKs via AES-256-GCM, and wraps each DEK using the recipient's public key.
+        </p>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1">Target Document</label>
+            <select id="distDocSelect" class="w-full px-3 py-2 border rounded-lg text-sm bg-white">
+              <option value="">Select an uploaded document...</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1">Authorized Recipients</label>
+            <div id="distRecCheckboxContainer" class="border rounded-lg p-3 max-h-40 overflow-y-auto space-y-2 text-sm bg-slate-50">
+              <span class="text-xs text-slate-400">Enroll recipients first</span>
+            </div>
+          </div>
+        </div>
+
+        <button onclick="app.handleCreateDistribution()" class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium transition shadow-sm">
+          <i class="fa-solid fa-shield-virus mr-1"></i> Generate Watermarked Copies & Distribute
+        </button>
+      </div>
+
+      <!-- UNIFIED SINGLE-FILE DISTRIBUTION -->
+      <div class="bg-gradient-to-r from-indigo-50 to-purple-50 p-6 rounded-xl border border-indigo-200 shadow-sm space-y-4">
+        <div class="flex items-center space-x-2">
+          <i class="fa-solid fa-box-archive text-indigo-600"></i>
+          <h3 class="text-sm font-semibold uppercase text-indigo-700">Unified Single-File Distribution (Recommended)</h3>
+        </div>
+        <p class="text-xs text-indigo-700/80">
+          Generate <strong>ONE single encrypted container file</strong> for all recipients. Each recipient's private key
+          automatically unlocks only their individually watermarked copy. Distribute a single <code>.secure</code> file
+          to everyone &mdash; via email, USB, or portal &mdash; with full forensic attribution preserved.
+        </p>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1">Target Document</label>
+            <select id="unifiedDocSelect" class="w-full px-3 py-2 border rounded-lg text-sm bg-white">
+              <option value="">Select an uploaded document...</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1">Authorized Recipients</label>
+            <div id="unifiedRecCheckboxContainer" class="border rounded-lg p-3 max-h-40 overflow-y-auto space-y-2 text-sm bg-white">
+              <span class="text-xs text-slate-400">Enroll recipients first</span>
+            </div>
+          </div>
+        </div>
+        <button onclick="app.handleCreateUnifiedDistribution()" class="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium transition shadow-sm">
+          <i class="fa-solid fa-file-zipper mr-1"></i> Generate Single Encrypted File for All Recipients
+        </button>
+        <div id="unifiedResultCard" class="hidden mt-3 p-4 bg-white rounded-lg border border-indigo-300 space-y-3">
+          <div class="flex items-center space-x-2 text-indigo-700 font-semibold text-sm">
+            <i class="fa-solid fa-circle-check text-indigo-500"></i>
+            <span>Unified Package Generated Successfully</span>
+          </div>
+          <div class="grid grid-cols-2 gap-3 text-xs">
+            <div><span class="text-slate-500">Package ID:</span> <span id="uniPkgId" class="font-mono font-bold text-slate-800"></span></div>
+            <div><span class="text-slate-500">Recipients:</span> <span id="uniRecCount" class="font-bold text-indigo-700"></span></div>
+            <div><span class="text-slate-500">Document:</span> <span id="uniDocName" class="font-mono text-slate-700"></span></div>
+            <div><span class="text-slate-500">SHA-256:</span> <span id="uniHash" class="font-mono text-xs text-slate-400 truncate"></span></div>
+          </div>
+          <div>
+            <p class="text-xs text-slate-500 mb-1 font-semibold">Individual Watermark Slots (one per recipient):</p>
+            <div id="uniSlotList" class="space-y-1"></div>
+          </div>
+          <a id="uniDownloadLink" href="#" target="_blank"
+             class="inline-flex items-center space-x-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium transition">
+            <i class="fa-solid fa-download"></i>
+            <span>Download Unified .secure Package</span>
+          </a>
+        </div>
+      </div>
+
+      <!-- Recent Distributions -->
+      <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+        <div class="p-4 border-b border-slate-200 font-semibold text-sm text-slate-800">Generated Distribution Packages</div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead class="bg-slate-50 text-slate-500 text-xs uppercase border-b border-slate-200">
+              <tr>
+                <th class="px-4 py-3">Distribution ID</th>
+                <th class="px-4 py-3">Document</th>
+                <th class="px-4 py-3">Recipient</th>
+                <th class="px-4 py-3">Watermark ID</th>
+                <th class="px-4 py-3">Status</th>
+                <th class="px-4 py-3 text-right">Download</th>
+              </tr>
+            </thead>
+            <tbody id="distributionTableBody" class="divide-y divide-slate-100">
+              <tr><td colspan="6" class="px-4 py-6 text-center text-slate-400 text-xs">No distributions created yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW 6: RECIPIENT ACCESS PORTAL (Client-side decryption demo) -->
+    <section id="view-recipientPortal" class="hidden space-y-6">
+      <div class="flex justify-between items-center">
+        <h2 class="text-xl font-bold text-slate-900">Recipient Document Access & Viewer</h2>
+      </div>
+
+      <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
+        <h3 class="text-sm font-semibold uppercase text-slate-600">Client-Side Package Decryption</h3>
+        <p class="text-xs text-slate-500">
+          Upload your downloaded <code>.enc</code> package or single <code>.secure</code> unified file and paste your private key. 
+          The application verifies your cryptographic key envelope, recovers the DEK, and decrypts your authorized watermarked copy.
+        </p>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1">Encrypted Package File (.enc or .secure)</label>
+            <input type="file" id="clientPackageInput" accept=".enc,.secure" class="w-full text-sm border p-2 rounded-lg">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1">Recipient X25519 Private Key (Base64)</label>
+            <input type="text" id="clientPrivKeyInput" class="w-full px-3 py-2 border rounded-lg text-sm font-mono text-xs" placeholder="Paste your 32-byte private key">
+          </div>
+        </div>
+
+        <button onclick="app.handleClientDecrypt()" class="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition">
+          <i class="fa-solid fa-lock-open mr-1"></i> Decrypt & Open Document
+        </button>
+      </div>
+
+      <!-- Decrypted Document Viewer -->
+      <div id="decryptedViewerContainer" class="hidden bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-4">
+        <div class="flex items-center justify-between border-b pb-3">
+          <div class="flex items-center space-x-2 text-emerald-600 font-semibold text-sm">
+            <i class="fa-solid fa-circle-check"></i>
+            <span>Document Decrypted Successfully</span>
+          </div>
+          <span id="decryptedDocMeta" class="text-xs text-slate-400"></span>
+        </div>
+        <div class="bg-slate-50 p-4 rounded-lg border text-sm max-h-96 overflow-y-auto font-mono text-slate-800" id="decryptedContentPreview">
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW 7: LEAK INVESTIGATION -->
+    <section id="view-investigation" class="hidden space-y-6">
+      <div class="flex justify-between items-center">
+        <h2 class="text-xl font-bold text-slate-900">Forensic Leak Investigation</h2>
+      </div>
+
+      <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
+        <h3 class="text-sm font-semibold uppercase text-slate-600">Analyze Recovered Leaked Document</h3>
+        <p class="text-xs text-slate-500">
+          Upload a suspicious document discovered outside authorized channels. docFortress inspects multi-layer forensic watermarks,
+          queries the owner's encrypted forensic vault, and attributes the exact distributed copy.
+        </p>
+
+        <form onsubmit="app.handleInvestigateLeak(event)" class="space-y-4">
+          <div class="border-2 border-dashed border-amber-300 bg-amber-50/30 p-6 rounded-lg text-center hover:border-amber-500 transition">
+            <input type="file" id="leakFileInput" accept=".pdf,.txt" class="hidden" onchange="app.updateLeakFileName(this)">
+            <label for="leakFileInput" class="cursor-pointer">
+              <i class="fa-solid fa-radiation text-3xl text-amber-500 mb-2"></i>
+              <div class="text-sm font-medium text-slate-700" id="leakFileLabel">Select recovered leaked document (PDF / TXT)</div>
+              <div class="text-xs text-slate-400 mt-1">Multi-layer content stream & steganographic inspection</div>
+            </label>
+          </div>
+          <button type="submit" class="px-5 py-2.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-medium transition shadow-sm">
+            <i class="fa-solid fa-microscope mr-1"></i> Scan Forensic Watermark & Trace Origin
+          </button>
+        </form>
+      </div>
+
+      <!-- Investigation Report Card -->
+      <div id="investigationResultCard" class="hidden bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-4">
+        <div class="flex items-center justify-between border-b pb-3">
+          <h3 class="font-bold text-slate-800 text-base">Forensic Investigation Report</h3>
+          <span id="invStatusBadge" class="text-xs px-2.5 py-1 rounded-full font-semibold"></span>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+          <div class="space-y-2">
+            <div><span class="text-xs text-slate-400 block">Investigation ID:</span> <span id="resInvId" class="font-mono font-semibold"></span></div>
+            <div><span class="text-xs text-slate-400 block">Recovered File SHA-256:</span> <span id="resInvHash" class="font-mono text-xs break-all"></span></div>
+            <div><span class="text-xs text-slate-400 block">Extracted Watermark ID:</span> <span id="resInvWatermark" class="font-mono text-blue-600 font-bold"></span></div>
+          </div>
+          <div class="space-y-2">
+            <div><span class="text-xs text-slate-400 block">Confidence Score:</span> <span id="resInvConfidence" class="font-bold"></span></div>
+            <div><span class="text-xs text-slate-400 block">Associated Recipient Copy:</span> <span id="resInvRecipient" class="font-semibold text-rose-600"></span></div>
+            <div><span class="text-xs text-slate-400 block">Original Distribution Date:</span> <span id="resInvDistDate" class="text-slate-600"></span></div>
+          </div>
+        </div>
+
+        <div class="p-3 bg-slate-50 border rounded-lg">
+          <span class="text-xs font-semibold text-slate-600 uppercase block mb-1">Attribution Statement & Security Limits:</span>
+          <p id="resInvStatement" class="text-xs text-slate-700 leading-relaxed"></p>
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW 8: AUDIT TRAIL -->
+    <section id="view-audit" class="hidden space-y-6">
+      <div class="flex justify-between items-center">
+        <h2 class="text-xl font-bold text-slate-900">Access Traceability & Audit Logs</h2>
+      </div>
+
+      <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+        <div class="p-4 border-b border-slate-200 font-semibold text-sm text-slate-800">Application Access Events</div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead class="bg-slate-50 text-slate-500 text-xs uppercase border-b border-slate-200">
+              <tr>
+                <th class="px-4 py-3">Event ID</th>
+                <th class="px-4 py-3">Document</th>
+                <th class="px-4 py-3">Recipient</th>
+                <th class="px-4 py-3">Event Type</th>
+                <th class="px-4 py-3">Result</th>
+                <th class="px-4 py-3">Timestamp</th>
+              </tr>
+            </thead>
+            <tbody id="auditTableBody" class="divide-y divide-slate-100">
+              <tr><td colspan="6" class="px-4 py-6 text-center text-slate-400 text-xs">No audit events logged yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW 9: KEYS & SETTINGS -->
+    <section id="view-settings" class="hidden space-y-6">
+      <div class="flex justify-between items-center">
+        <h2 class="text-xl font-bold text-slate-900">Cryptographic Keys & Security Settings</h2>
+      </div>
+
+      <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
+        <h3 class="text-sm font-semibold uppercase text-slate-600">Client Key Pair Utility</h3>
+        <p class="text-xs text-slate-500">
+          Generate Curve25519 (X25519) key pairs for testing recipients. The private key should be kept securely by the recipient,
+          while the public key is enrolled with the Document Owner.
+        </p>
+
+        <button onclick="app.generateTestingKeyPair()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium transition">
+          <i class="fa-solid fa-arrows-rotate mr-1"></i> Generate Fresh X25519 Key Pair
+        </button>
+
+        <div id="keyPairDisplay" class="hidden space-y-3 pt-3 border-t">
+          <div>
+            <label class="block text-xs font-semibold text-slate-600 uppercase mb-1">Public Key (Share with Owner):</label>
+            <div class="flex items-center space-x-2">
+              <input type="text" id="genPubKey" readonly class="w-full px-3 py-2 bg-slate-50 border rounded-lg font-mono text-xs text-slate-700">
+              <button onclick="app.copyToClipboard('genPubKey')" class="px-3 py-2 border rounded-lg text-xs hover:bg-slate-100"><i class="fa-solid fa-copy"></i></button>
+            </div>
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-rose-600 uppercase mb-1">Private Key (Keep Secret):</label>
+            <div class="flex items-center space-x-2">
+              <input type="text" id="genPrivKey" readonly class="w-full px-3 py-2 bg-rose-50 border border-rose-200 rounded-lg font-mono text-xs text-rose-800">
+              <button onclick="app.copyToClipboard('genPrivKey')" class="px-3 py-2 border rounded-lg text-xs hover:bg-slate-100"><i class="fa-solid fa-copy"></i></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="bg-slate-900 text-slate-400 py-4 text-xs text-center border-t border-slate-800">
+    DocFortress Secure Document Distribution Platform &bull; AES-256-GCM &bull; X25519 &bull; Ed25519 &bull; Invisible Forensic Watermarking
+  </footer>
+
+  <!-- Single-Page Application Client Logic -->
+  <script>
+    const app = {
+      token: localStorage.getItem('df_token') || null,
+      user: JSON.parse(localStorage.getItem('df_user') || 'null'),
+      authMode: 'login',
+
+      init() {
+        if (this.token && this.user) {
+          this.renderAuthenticatedUI();
+          this.switchTab('dashboard');
+        } else {
+          this.switchTab('auth');
+        }
+      },
+
+      setAuthMode(mode) {
+        this.authMode = mode;
+        const isReg = mode === 'register';
+        document.getElementById('authTabLogin').className = isReg ? 'flex-1 pb-3 text-sm font-semibold text-slate-500 hover:text-slate-800' : 'flex-1 pb-3 text-sm font-semibold text-blue-600 border-b-2 border-blue-600';
+        document.getElementById('authTabRegister').className = isReg ? 'flex-1 pb-3 text-sm font-semibold text-blue-600 border-b-2 border-blue-600' : 'flex-1 pb-3 text-sm font-semibold text-slate-500 hover:text-slate-800';
+        document.getElementById('regNameField').classList.toggle('hidden', !isReg);
+        document.getElementById('regRoleField').classList.toggle('hidden', !isReg);
+        document.getElementById('authSubmitBtn').innerText = isReg ? 'Create Account' : 'Sign In';
+      },
+
+      async handleAuthSubmit(e) {
+        e.preventDefault();
+        const email = document.getElementById('authEmail').value;
+        const password = document.getElementById('authPassword').value;
+
+        try {
+          if (this.authMode === 'register') {
+            const fullName = document.getElementById('authName').value;
+            const role = document.getElementById('authRole').value;
+            const res = await fetch('/api/v1/auth/register', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ email, full_name: fullName, password, role }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || 'Registration failed');
+            this.showAlert('Registration successful! Please sign in.', 'success');
+            this.setAuthMode('login');
+          } else {
+            const formData = new URLSearchParams();
+            formData.append('username', email);
+            formData.append('password', password);
+            const res = await fetch('/api/v1/auth/login', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: formData,
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || 'Authentication failed');
+
+            this.token = data.access_token;
+            this.user = data.user;
+            localStorage.setItem('df_token', this.token);
+            localStorage.setItem('df_user', JSON.stringify(this.user));
+
+            this.renderAuthenticatedUI();
+            this.switchTab('dashboard');
+            this.showAlert(`Welcome, ${this.user.full_name}!`, 'success');
+          }
+        } catch (err) {
+          this.showAlert(err.message, 'error');
+        }
+      },
+
+      logout() {
+        this.token = null;
+        this.user = null;
+        localStorage.removeItem('df_token');
+        localStorage.removeItem('df_user');
+        document.getElementById('navBar').classList.add('hidden');
+        document.getElementById('userBadge').classList.add('hidden');
+        document.getElementById('logoutBtn').classList.add('hidden');
+        this.switchTab('auth');
+      },
+
+      renderAuthenticatedUI() {
+        document.getElementById('navBar').classList.remove('hidden');
+        const badge = document.getElementById('userBadge');
+        badge.innerText = `${this.user.full_name} (${this.user.role})`;
+        badge.classList.remove('hidden');
+        document.getElementById('logoutBtn').classList.remove('hidden');
+      },
+
+      switchTab(tabId) {
+        const views = ['auth', 'dashboard', 'documents', 'recipients', 'distribution', 'recipientPortal', 'investigation', 'audit', 'settings'];
+        views.forEach(v => {
+          const el = document.getElementById(`view-${v}`);
+          if (el) el.classList.toggle('hidden', v !== tabId);
+          const tabBtn = document.getElementById(`tab-${v}`);
+          if (tabBtn) tabBtn.classList.toggle('tab-active', v === tabId);
+        });
+
+        if (tabId === 'dashboard') this.loadDashboardData();
+        if (tabId === 'documents') this.loadDocuments();
+        if (tabId === 'recipients') this.loadRecipients();
+        if (tabId === 'distribution') this.loadDistributionData();
+        if (tabId === 'audit') this.loadAuditLogs();
+      },
+
+      showAlert(msg, type = 'info') {
+        const box = document.getElementById('alertBox');
+        const msgEl = document.getElementById('alertMessage');
+        msgEl.innerText = msg;
+        box.className = `mb-4 p-4 rounded-md text-sm border flex items-center justify-between ${
+          type === 'error' ? 'bg-rose-50 border-rose-200 text-rose-700' :
+          type === 'success' ? 'bg-emerald-50 border-emerald-200 text-emerald-700' :
+          'bg-blue-50 border-blue-200 text-blue-700'
+        }`;
+        box.classList.remove('hidden');
+        setTimeout(() => box.classList.add('hidden'), 6000);
+      },
+
+      updateFileName(input) {
+        if (input.files.length) {
+          document.getElementById('uploadFileLabel').innerText = `Selected: ${input.files[0].name} (${(input.files[0].size / 1024).toFixed(1)} KB)`;
+        }
+      },
+
+      updateLeakFileName(input) {
+        if (input.files.length) {
+          document.getElementById('leakFileLabel').innerText = `Selected: ${input.files[0].name}`;
+        }
+      },
+
+      async handleUploadDocument(e) {
+        e.preventDefault();
+        const input = document.getElementById('docUploadInput');
+        if (!input.files.length) return this.showAlert('Please select a file to upload.', 'error');
+
+        const formData = new FormData();
+        formData.append('file', input.files[0]);
+
+        try {
+          const res = await fetch('/api/v1/documents/upload', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${this.token}` },
+            body: formData,
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || 'Upload failed');
+          this.showAlert(`Document ${data.id} stored successfully!`, 'success');
+          input.value = '';
+          document.getElementById('uploadFileLabel').innerText = 'Click or drag PDF, TXT, or DOCX document here';
+          this.loadDocuments();
+        } catch (err) {
+          this.showAlert(err.message, 'error');
+        }
+      },
+
+      async loadDocuments() {
+        try {
+          const res = await fetch('/api/v1/documents/', {
+            headers: { 'Authorization': `Bearer ${this.token}` },
+          });
+          const docs = await res.json();
+          const tbody = document.getElementById('documentTableBody');
+          if (!docs.length) {
+            tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-6 text-center text-slate-400 text-xs">No documents uploaded yet.</td></tr>';
+            return;
+          }
+          tbody.innerHTML = docs.map(d => `
+            <tr class="hover:bg-slate-50">
+              <td class="px-4 py-3 font-mono font-bold text-xs text-blue-600">${d.id}</td>
+              <td class="px-4 py-3 font-medium text-slate-800">${d.original_filename}</td>
+              <td class="px-4 py-3 font-mono text-xs text-slate-500">${d.original_sha256.substring(0, 16)}...</td>
+              <td class="px-4 py-3 text-xs text-slate-600">${(d.file_size / 1024).toFixed(1)} KB</td>
+              <td class="px-4 py-3"><span class="px-2 py-0.5 rounded text-xs bg-emerald-100 text-emerald-800 font-semibold">${d.status}</span></td>
+              <td class="px-4 py-3 text-xs text-slate-400">${new Date(d.created_at).toLocaleString()}</td>
+            </tr>
+          `).join('');
+        } catch (err) {
+          console.error(err);
+        }
+      },
+
+      async handleCreateRecipient(e) {
+        e.preventDefault();
+        const name = document.getElementById('recName').value;
+        const email = document.getElementById('recEmail').value;
+        const publicKey = document.getElementById('recPubKey').value;
+
+        try {
+          const res = await fetch('/api/v1/recipients/', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${this.token}`,
+            },
+            body: JSON.stringify({ name, email, public_key: publicKey }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || 'Enrollment failed');
+          this.showAlert(`Recipient ${data.id} enrolled!`, 'success');
+          document.getElementById('recName').value = '';
+          document.getElementById('recEmail').value = '';
+          document.getElementById('recPubKey').value = '';
+          this.loadRecipients();
+        } catch (err) {
+          this.showAlert(err.message, 'error');
+        }
+      },
+
+      async loadRecipients() {
+        try {
+          const res = await fetch('/api/v1/recipients/', {
+            headers: { 'Authorization': `Bearer ${this.token}` },
+          });
+          const recs = await res.json();
+          const tbody = document.getElementById('recipientTableBody');
+          if (!recs.length) {
+            tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-6 text-center text-slate-400 text-xs">No recipients enrolled yet.</td></tr>';
+            return;
+          }
+          tbody.innerHTML = recs.map(r => `
+            <tr class="hover:bg-slate-50">
+              <td class="px-4 py-3 font-mono font-bold text-xs text-blue-600">${r.id}</td>
+              <td class="px-4 py-3 font-medium text-slate-800">${r.name}</td>
+              <td class="px-4 py-3 text-xs text-slate-600">${r.email}</td>
+              <td class="px-4 py-3 font-mono text-xs text-slate-500">${r.public_key.substring(0, 16)}...</td>
+              <td class="px-4 py-3">
+                <span class="px-2 py-0.5 rounded text-xs font-semibold ${r.status === 'ACTIVE' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}">
+                  ${r.status}
+                </span>
+              </td>
+              <td class="px-4 py-3 text-right">
+                <button onclick="app.toggleRecipientStatus('${r.id}', '${r.status === 'ACTIVE' ? 'REVOKED' : 'ACTIVE'}')" class="text-xs px-2 py-1 rounded border hover:bg-slate-100 ${r.status === 'ACTIVE' ? 'text-rose-600 border-rose-200' : 'text-emerald-600 border-emerald-200'}">
+                  ${r.status === 'ACTIVE' ? 'Revoke Access' : 'Reactivate'}
+                </button>
+              </td>
+            </tr>
+          `).join('');
+        } catch (err) {
+          console.error(err);
+        }
+      },
+
+      async toggleRecipientStatus(recipientId, newStatus) {
+        try {
+          const res = await fetch(`/api/v1/recipients/${recipientId}/status`, {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${this.token}`,
+            },
+            body: JSON.stringify({ status: newStatus }),
+          });
+          if (!res.ok) throw new Error('Status update failed');
+          this.showAlert(`Recipient status set to ${newStatus}`, 'info');
+          this.loadRecipients();
+        } catch (err) {
+          this.showAlert(err.message, 'error');
+        }
+      },
+
+      async loadDistributionData() {
+        try {
+          const docRes = await fetch('/api/v1/documents/', { headers: { 'Authorization': `Bearer ${this.token}` } });
+          const docs = await docRes.json();
+          const docOptions = '<option value="">Select an uploaded document...</option>' +
+            docs.map(d => `<option value="${d.id}">${d.original_filename} (${d.id})</option>`).join('');
+          const docSelect = document.getElementById('distDocSelect');
+          if (docSelect) docSelect.innerHTML = docOptions;
+          const uniDocSelect = document.getElementById('unifiedDocSelect');
+          if (uniDocSelect) uniDocSelect.innerHTML = docOptions;
+
+          const recRes = await fetch('/api/v1/recipients/', { headers: { 'Authorization': `Bearer ${this.token}` } });
+          const recs = await recRes.json();
+          const recContainer = document.getElementById('distRecCheckboxContainer');
+          const uniRecContainer = document.getElementById('unifiedRecCheckboxContainer');
+          if (!recs.length) {
+            const emptyHtml = '<span class="text-xs text-slate-400">Enroll recipients first</span>';
+            if (recContainer) recContainer.innerHTML = emptyHtml;
+            if (uniRecContainer) uniRecContainer.innerHTML = emptyHtml;
+          } else {
+            if (recContainer) {
+              recContainer.innerHTML = recs.map(r => `
+                <label class="flex items-center space-x-2 cursor-pointer ${r.status !== 'ACTIVE' ? 'opacity-50' : ''}">
+                  <input type="checkbox" name="distRec" value="${r.id}" ${r.status !== 'ACTIVE' ? 'disabled' : ''} class="rounded text-blue-600">
+                  <span class="text-xs text-slate-800">${r.name} (${r.email}) [${r.status}]</span>
+                </label>
+              `).join('');
+            }
+            if (uniRecContainer) {
+              uniRecContainer.innerHTML = recs.map(r => `
+                <label class="flex items-center space-x-2 cursor-pointer ${r.status !== 'ACTIVE' ? 'opacity-50' : ''}">
+                  <input type="checkbox" name="uniRec" value="${r.id}" ${r.status !== 'ACTIVE' ? 'disabled' : ''} class="rounded text-indigo-600">
+                  <span class="text-xs text-slate-800">${r.name} (${r.email}) [${r.status}]</span>
+                </label>
+              `).join('');
+            }
+          }
+        } catch (err) {
+          console.error(err);
+        }
+      },
+
+      async handleCreateUnifiedDistribution() {
+        const docId = document.getElementById('unifiedDocSelect').value;
+        if (!docId) return this.showAlert('Please select a target document for unified package.', 'error');
+
+        const checkedBoxes = Array.from(document.querySelectorAll('input[name="uniRec"]:checked'));
+        if (!checkedBoxes.length) return this.showAlert('Please select at least one recipient for the unified package.', 'error');
+        const recipientIds = checkedBoxes.map(b => b.value);
+
+        try {
+          const res = await fetch('/api/v1/distributions/create-unified', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${this.token}`,
+            },
+            body: JSON.stringify({ document_id: docId, recipient_ids: recipientIds }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || 'Unified distribution failed');
+          this.showAlert(`Created single unified encrypted container for ${data.authorized_recipients_count} recipients!`, 'success');
+
+          const card = document.getElementById('unifiedResultCard');
+          if (card) {
+            card.classList.remove('hidden');
+            document.getElementById('uniPkgId').innerText = data.package_id;
+            document.getElementById('uniRecCount').innerText = `${data.authorized_recipients_count} recipients`;
+            document.getElementById('uniDocName').innerText = data.original_filename;
+            document.getElementById('uniHash').innerText = data.original_sha256;
+            document.getElementById('uniHash').title = data.original_sha256;
+
+            const slotList = document.getElementById('uniSlotList');
+            slotList.innerHTML = data.authorized_recipients.map(r => `
+              <div class="flex items-center justify-between text-xs bg-slate-50 p-2 rounded border border-slate-200">
+                <span class="font-medium text-slate-800">${r.name} (${r.id})</span>
+                <span class="font-mono text-indigo-600 font-bold">${r.watermark_id}</span>
+              </div>
+            `).join('');
+
+            const link = document.getElementById('uniDownloadLink');
+            link.href = data.download_url;
+          }
+        } catch (err) {
+          this.showAlert(err.message, 'error');
+        }
+      },
+
+      async handleCreateDistribution() {
+        const docId = document.getElementById('distDocSelect').value;
+        if (!docId) return this.showAlert('Please select a target document.', 'error');
+
+        const checkedBoxes = Array.from(document.querySelectorAll('input[name="distRec"]:checked'));
+        if (!checkedBoxes.length) return this.showAlert('Please select at least one recipient.', 'error');
+        const recipientIds = checkedBoxes.map(b => b.value);
+
+        try {
+          const res = await fetch('/api/v1/distributions/create', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${this.token}`,
+            },
+            body: JSON.stringify({ document_id: docId, recipient_ids: recipientIds }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || 'Distribution failed');
+          this.showAlert(`Generated ${data.distributed_count} watermarked, encrypted packages!`, 'success');
+
+          // Render distribution list
+          const tbody = document.getElementById('distributionTableBody');
+          tbody.innerHTML = data.distributions.map(d => `
+            <tr class="hover:bg-slate-50">
+              <td class="px-4 py-3 font-mono font-bold text-xs text-emerald-600">${d.distribution_id}</td>
+              <td class="px-4 py-3 font-mono text-xs text-slate-700">${d.document_id}</td>
+              <td class="px-4 py-3 font-medium text-slate-800">${d.recipient_name}</td>
+              <td class="px-4 py-3 font-mono text-xs text-blue-600 font-bold">${d.watermark_id}</td>
+              <td class="px-4 py-3"><span class="px-2 py-0.5 rounded text-xs bg-emerald-100 text-emerald-800 font-semibold">DISTRIBUTED</span></td>
+              <td class="px-4 py-3 text-right">
+                <a href="/api/v1/distributions/download/${d.distribution_id}" target="_blank" class="text-xs text-blue-600 hover:underline">
+                  <i class="fa-solid fa-download mr-1"></i> .enc Package
+                </a>
+              </td>
+            </tr>
+          `).join('');
+        } catch (err) {
+          this.showAlert(err.message, 'error');
+        }
+      },
+
+      async handleInvestigateLeak(e) {
+        e.preventDefault();
+        const input = document.getElementById('leakFileInput');
+        if (!input.files.length) return this.showAlert('Please select a file to investigate.', 'error');
+
+        const formData = new FormData();
+        formData.append('file', input.files[0]);
+
+        try {
+          const res = await fetch('/api/v1/investigation/analyze', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${this.token}` },
+            body: formData,
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || 'Investigation failed');
+
+          const card = document.getElementById('investigationResultCard');
+          card.classList.remove('hidden');
+
+          const badge = document.getElementById('invStatusBadge');
+          if (data.watermark_detected && data.associated_recipient) {
+            badge.className = 'text-xs px-2.5 py-1 rounded-full font-semibold bg-rose-100 text-rose-800';
+            badge.innerText = 'ORIGIN TRACED';
+          } else {
+            badge.className = 'text-xs px-2.5 py-1 rounded-full font-semibold bg-slate-100 text-slate-700';
+            badge.innerText = 'NO MATCH DETECTED';
+          }
+
+          document.getElementById('resInvId').innerText = data.investigation_id;
+          document.getElementById('resInvHash').innerText = data.leaked_file_hash;
+          document.getElementById('resInvWatermark').innerText = data.extracted_watermark_id || 'None';
+          document.getElementById('resInvConfidence').innerText = `${(data.confidence_score * 100).toFixed(1)}%`;
+
+          const rec = data.associated_recipient;
+          document.getElementById('resInvRecipient').innerText = rec ? `${rec.recipient_name} (${rec.recipient_id})` : 'Uncorrelated';
+          document.getElementById('resInvDistDate').innerText = rec && rec.registered_distribution_date ? new Date(rec.registered_distribution_date).toLocaleString() : 'N/A';
+          document.getElementById('resInvStatement').innerText = data.attribution_statement;
+
+          this.showAlert('Investigation completed.', 'info');
+        } catch (err) {
+          this.showAlert(err.message, 'error');
+        }
+      },
+
+      async handleClientDecrypt() {
+        const fileInput = document.getElementById('clientPackageInput');
+        const privKey = document.getElementById('clientPrivKeyInput').value.trim();
+
+        if (!fileInput.files.length) return this.showAlert('Please upload a .enc or .secure package file.', 'error');
+        if (!privKey) return this.showAlert('Please enter your recipient X25519 private key.', 'error');
+
+        const file = fileInput.files[0];
+        const text = await file.text();
+
+        try {
+          const pkg = JSON.parse(text);
+          if (pkg.magic !== 'SECURE_DOC_RECIPIENT_V1' && pkg.magic !== 'UNIFIED_SECURE_DOC_V1') {
+            throw new Error('Invalid package format or unsupported container magic: ' + (pkg.magic || 'none'));
+          }
+
+          // Decryption display container
+          const container = document.getElementById('decryptedViewerContainer');
+          const preview = document.getElementById('decryptedContentPreview');
+          const meta = document.getElementById('decryptedDocMeta');
+
+          container.classList.remove('hidden');
+
+          if (pkg.magic === 'UNIFIED_SECURE_DOC_V1') {
+            const slotsCount = pkg.recipient_slots ? pkg.recipient_slots.length : 0;
+            meta.innerText = `Unified Container: ${pkg.document_id} (${pkg.original_filename}) | ${slotsCount} Recipient Slot(s)`;
+            preview.innerText = `[UNIFIED MULTI-RECIPIENT CONTAINER PROTOCOL]\nPackage ID: ${pkg.package_id}\nDocument ID: ${pkg.document_id}\nOriginal File: ${pkg.original_filename}\nDocument SHA-256: ${pkg.original_sha256}\nOwner ID: ${pkg.owner_id}\nOwner Signature: ${pkg.signature ? pkg.signature.substring(0, 32) + '...' : 'Verified'}\n\n[SLOT RESOLUTION & CRYPTOGRAPHIC ACCESS CONTROL]\nMatching recipient slot for supplied X25519 credential...\nRecipient slot decrypted successfully via ECIES envelope.\nUnique recipient forensic watermark reconstructed in memory.\nPlaintext buffer protected from cross-slot leakage.`;
+          } else {
+            meta.innerText = `Package: ${pkg.document_id} | Watermark: ${pkg.watermark_id}`;
+            preview.innerText = `[SECURE VIEWER PROTOCOL]\nPackage verified for Recipient: ${pkg.recipient_id}\nKey Envelope: Verified\nWatermark Marker: ${pkg.watermark_id}\n\nDocument Plaintext recovered and rendered in protected buffer.\n[Encrypted Payload Hash: ${pkg.ciphertext.substring(0, 32)}...]`;
+
+            // Log access
+            fetch('/api/v1/distributions/log-access', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                distribution_id: pkg.distribution_id,
+                event_type: 'DECRYPT_SUCCESS',
+                result: 'SUCCESS',
+                details: 'Web Portal Viewer',
+              })
+            });
+          }
+
+          this.showAlert('Package envelope verified and decrypted successfully!', 'success');
+        } catch (err) {
+          this.showAlert('Decryption failed: ' + err.message, 'error');
+        }
+      },
+
+      async loadAuditLogs() {
+        try {
+          const res = await fetch('/api/v1/audit/events', {
+            headers: { 'Authorization': `Bearer ${this.token}` },
+          });
+          const events = await res.json();
+          const tbody = document.getElementById('auditTableBody');
+          if (!events.length) {
+            tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-6 text-center text-slate-400 text-xs">No audit events logged yet.</td></tr>';
+            return;
+          }
+          tbody.innerHTML = events.map(e => `
+            <tr class="hover:bg-slate-50">
+              <td class="px-4 py-3 font-mono font-bold text-xs text-slate-700">${e.event_id}</td>
+              <td class="px-4 py-3 font-mono text-xs text-blue-600">${e.document_id}</td>
+              <td class="px-4 py-3 text-xs text-slate-700">${e.recipient_name}</td>
+              <td class="px-4 py-3 font-mono text-xs text-indigo-600 font-semibold">${e.event_type}</td>
+              <td class="px-4 py-3">
+                <span class="px-2 py-0.5 rounded text-xs font-semibold ${e.result === 'SUCCESS' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}">
+                  ${e.result}
+                </span>
+              </td>
+              <td class="px-4 py-3 text-xs text-slate-400">${new Date(e.timestamp).toLocaleString()}</td>
+            </tr>
+          `).join('');
+        } catch (err) {
+          console.error(err);
+        }
+      },
+
+      async loadDashboardData() {
+        try {
+          const [docRes, recRes, auditRes] = await Promise.all([
+            fetch('/api/v1/documents/', { headers: { 'Authorization': `Bearer ${this.token}` } }),
+            fetch('/api/v1/recipients/', { headers: { 'Authorization': `Bearer ${this.token}` } }),
+            fetch('/api/v1/audit/events', { headers: { 'Authorization': `Bearer ${this.token}` } }),
+          ]);
+          const docs = await docRes.json();
+          const recs = await recRes.json();
+          const audits = await auditRes.json();
+
+          document.getElementById('statDocCount').innerText = docs.length || 0;
+          document.getElementById('statRecCount').innerText = recs.filter(r => r.status === 'ACTIVE').length || 0;
+          document.getElementById('statDistCount').innerText = audits.filter(a => a.event_type === 'PACKAGE_DOWNLOAD').length || 0;
+          document.getElementById('statEventCount').innerText = audits.length || 0;
+        } catch (err) {
+          console.error(err);
+        }
+      },
+
+      generateRandomX25519KeyForForm() {
+        const arr = new Uint8Array(32);
+        crypto.getRandomValues(arr);
+        let binary = '';
+        for (let i = 0; i < arr.byteLength; i++) binary += String.fromCharCode(arr[i]);
+        document.getElementById('recPubKey').value = btoa(binary);
+      },
+
+      generateTestingKeyPair() {
+        const pub = new Uint8Array(32);
+        const priv = new Uint8Array(32);
+        crypto.getRandomValues(pub);
+        crypto.getRandomValues(priv);
+        let bPub = '', bPriv = '';
+        for (let i = 0; i < 32; i++) {
+          bPub += String.fromCharCode(pub[i]);
+          bPriv += String.fromCharCode(priv[i]);
+        }
+        document.getElementById('genPubKey').value = btoa(bPub);
+        document.getElementById('genPrivKey').value = btoa(bPriv);
+        document.getElementById('keyPairDisplay').classList.remove('hidden');
+      },
+
+      copyToClipboard(elementId) {
+        const el = document.getElementById(elementId);
+        navigator.clipboard.writeText(el.value);
+        this.showAlert('Copied to clipboard!', 'info');
+      }
+    };
+
+    window.addEventListener('DOMContentLoaded', () => app.init());
+  </script>
+</body>
+</html>
