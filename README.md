@@ -79,7 +79,7 @@ To resist standard PDF document sanitizers (which easily strip `/Info` and XMP m
 
 ## 5. Running the Automated Test Suite
 
-All 28 tests across shared cryptography, forensic watermarking, online backend, offline system, and full integration can be run via:
+All 31 tests across shared cryptography, forensic watermarking, online backend, unified multi-recipient packages, offline system, and full integration can be run via:
 
 ```powershell
 python -m pytest tests/ online/backend/tests/ -v
@@ -87,6 +87,7 @@ python -m pytest tests/ online/backend/tests/ -v
 
 ### Test Coverage Highlights
 * `tests/shared/test_crypto_core.py`: AES-256-GCM authenticated encryption, tag verification failure, tampered AAD rejection, fresh nonce verification, X25519 key agreement, Ed25519 digital signatures.
+* `tests/shared/test_unified_package.py`: Single-file distribution container (`UnifiedMultiRecipientPackage`), multi-recipient slot unwrapping, unauthorized access rejection, owner Ed25519 tamper detection, and end-to-end API workflow.
 * `tests/shared/test_watermark.py`: Zero-width roundtrip, text watermarking, multi-layer PDF watermarking and extraction, unwatermarked PDF rejection, corrupted payload CRC rejection.
 * `online/backend/tests/test_online_workflow.py`: Owner registration, login, document upload, recipient key management, multi-recipient distribution, recipient `.enc` download, client-side decryption, unauthorized access rejection, leak investigation attribution, recipient revocation, audit trail.
 * `tests/offline/test_offline_system.py`: Device identity generation, registration request signing, owner certificate verification, multi-device `.secure` packaging, authorized decryption, unauthorized rejection, tamper-evident audit verification, data tampering detection, keystore encryption.
@@ -96,8 +97,8 @@ python -m pytest tests/ online/backend/tests/ -v
 
 ## 6. Running Interactive Demonstrations
 
-### Scenario A & B: Online Distribution & Leak Investigation
-Demonstrates uploading a confidential PDF, distributing to Alice and Bob with distinct watermarks, proving Bob cannot open Alice's copy, and investigating a simulated dark web leak to attribute it to Alice:
+### Scenario A, B & C: Online Distribution, Leak Investigation & Single-File Container
+Demonstrates uploading a confidential PDF, distributing individually or as **ONE single `.secure` file for all recipients**, proving unauthorized parties cannot open it, and investigating simulated leaks to trace attribution:
 
 ```powershell
 python scripts/run_online_demo.py
