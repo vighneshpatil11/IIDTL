@@ -15,7 +15,11 @@ from shared.crypto.key_exchange import (
     x25519_public_from_bytes,
 )
 from shared.crypto.signatures import ed25519_public_to_bytes
-from shared.models.package import OfflineMultiDevicePackage
+from shared.models.package import (
+    OfflineMultiDevicePackage,
+    OnlineRecipientPackage,
+    UnifiedMultiRecipientPackage,
+)
 from shared.utils.identifiers import generate_document_id
 from shared.utils.serialization import b64encode_str, b64decode_str
 from shared.crypto.exceptions import AuthorizationError, IntegrityError
@@ -115,8 +119,11 @@ class OfflinePackagingService:
         device_enc_priv: x25519.X25519PrivateKey,
         device_sign_priv: Optional[ed25519.Ed25519PrivateKey] = None,
     ) -> bytes:
-        """Decrypt offline package for the calling device and record signed audit event."""
-        pkg = OfflineMultiDevicePackage.deserialize(package_bytes)
+        """Decrypt offline (.secure), online (.enc), or unified (.secure) package for the calling device/recipient."""
+        import json
+        payload = json.loads(package_bytes.decode("utf-8"))
+        magic = payload.get("magic")
+        doc_id = payload.get("document_id", "UNKNOWN_DOC")
 
         # Check local device revocation registry
         device = db.query(OfflineDevice).filter(OfflineDevice.device_id == device_id).first()
@@ -126,17 +133,30 @@ class OfflinePackagingService:
                 device_id=device_id,
                 event_type="DECRYPT_ATTEMPT",
                 result="DENIED_REVOKED",
-                document_id=pkg.document_id,
+                document_id=doc_id,
                 device_sign_priv=device_sign_priv,
             )
             raise AuthorizationError(f"Device '{device_id}' has been REVOKED by the owner.")
 
         try:
-            plaintext = pkg.decrypt_for_device(
-                device_id=device_id,
-                device_private_enc_key=device_enc_priv,
-                verify_owner_sig=True,
-            )
+            if magic == "SECURE_DOC_OFFLINE_V1":
+                pkg = OfflineMultiDevicePackage.deserialize(package_bytes)
+                plaintext = pkg.decrypt_for_device(
+                    device_id=device_id,
+                    device_private_enc_key=device_enc_priv,
+                    verify_owner_sig=True,
+                )
+            elif magic == "SECURE_DOC_RECIPIENT_V1":
+                pkg_online = OnlineRecipientPackage.deserialize(package_bytes)
+                plaintext = pkg_online.decrypt(recipient_private_key=device_enc_priv)
+            elif magic == "UNIFIED_SECURE_DOC_V1":
+                pkg_unified = UnifiedMultiRecipientPackage.deserialize(package_bytes)
+                plaintext, _ = pkg_unified.decrypt_for_recipient(
+                    recipient_private_key=device_enc_priv,
+                    recipient_id=device_id,
+                )
+            else:
+                raise ValueError(f"Unrecognized package magic: {magic}")
 
             # Record success in hash-linked audit chain
             HashLinkedAuditService.record_event(
@@ -144,7 +164,7 @@ class OfflinePackagingService:
                 device_id=device_id,
                 event_type="DECRYPT_SUCCESS",
                 result="SUCCESS",
-                document_id=pkg.document_id,
+                document_id=doc_id,
                 device_sign_priv=device_sign_priv,
             )
             return plaintext
@@ -156,7 +176,7 @@ class OfflinePackagingService:
                 device_id=device_id,
                 event_type="DECRYPT_FAILED",
                 result="DENIED_ERROR",
-                document_id=pkg.document_id,
+                document_id=doc_id,
                 device_sign_priv=device_sign_priv,
             )
             raise

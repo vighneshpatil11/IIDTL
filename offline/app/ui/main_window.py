@@ -296,7 +296,12 @@ class MainWindow(QMainWindow):
             self.txt_pkg_file.setText(path)
 
     def _browse_package_to_decrypt(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Select Package", "", "Secure Containers (*.secure)")
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Package",
+            "",
+            "All Protected Packages (*.secure *.enc);;Offline Packages (*.secure);;Online Packages (*.enc);;All Files (*)",
+        )
         if path:
             self.txt_dec_file.setText(path)
 

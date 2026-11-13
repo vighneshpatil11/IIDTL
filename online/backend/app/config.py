@@ -16,10 +16,40 @@ class Settings(BaseSettings):
     
     # Paths
     BASE_DIR: Path = Path(__file__).resolve().parent.parent.parent.parent
-    STORAGE_DIR: Path = BASE_DIR / "data" / "online"
-    UPLOAD_DIR: Path = STORAGE_DIR / "uploads"
-    ENCRYPTED_DIR: Path = STORAGE_DIR / "encrypted"
-    DATABASE_URL: str = f"sqlite:///{STORAGE_DIR / 'online_system.db'}"
+
+    @property
+    def STORAGE_DIR(self) -> Path:
+        if os.getenv("VERCEL") == "1" or os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
+            p = Path("/tmp") / "data" / "online"
+        else:
+            p = self.BASE_DIR / "data" / "online"
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        return p
+
+    @property
+    def UPLOAD_DIR(self) -> Path:
+        p = self.STORAGE_DIR / "uploads"
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        return p
+
+    @property
+    def ENCRYPTED_DIR(self) -> Path:
+        p = self.STORAGE_DIR / "encrypted"
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        return p
+
+    @property
+    def DATABASE_URL(self) -> str:
+        return f"sqlite:///{self.STORAGE_DIR / 'online_system.db'}"
 
     # Forensic Master Key for Watermark Vault (32 bytes hex)
     FORENSIC_MASTER_KEY_HEX: str = os.getenv(
@@ -31,6 +61,9 @@ class Settings(BaseSettings):
 settings = Settings()
 
 # Ensure directories exist
-settings.STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-settings.ENCRYPTED_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    settings.STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    settings.ENCRYPTED_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
