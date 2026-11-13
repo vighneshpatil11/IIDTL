@@ -1,8 +1,8 @@
-"""Document distribution and packaging service."""
+"""Document distribution and packaging service (per-recipient .enc and unified single-file .secure)."""
 
 import json
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
 
@@ -15,8 +15,12 @@ from shared.crypto.key_exchange import (
     wrap_dek_for_recipient,
     x25519_public_from_bytes,
 )
-from shared.models.package import OnlineRecipientPackage
-from shared.utils.identifiers import generate_watermark_id
+from shared.crypto.signatures import (
+    generate_ed25519_keypair,
+    ed25519_public_to_bytes,
+)
+from shared.models.package import OnlineRecipientPackage, UnifiedMultiRecipientPackage
+from shared.utils.identifiers import generate_watermark_id, generate_document_id
 from shared.utils.serialization import b64encode_str, b64decode_str
 from shared.watermark.engine import WatermarkEngine
 from online.backend.app.config import settings
@@ -32,16 +36,7 @@ class DistributionService:
         document_id: str,
         recipient_ids: List[str],
     ) -> List[Dict[str, Any]]:
-        """Distribute a confidential document to designated recipients.
-        
-        For each recipient:
-        1. Embed unique invisible forensic watermark.
-        2. Encrypt watermarked copy with fresh ephemeral DEK (AES-256-GCM).
-        3. Wrap DEK with recipient's public key (X25519 + HKDF).
-        4. Store forensic watermark mapping in encrypted vault.
-        5. Save recipient package container (.enc).
-        6. Record distribution event.
-        """
+        """Distribute individual recipient packages (.enc)."""
         doc = db.query(Document).filter(Document.id == document_id, Document.owner_id == owner.id).first()
         if not doc:
             raise HTTPException(status_code=404, detail="Document not found or not owned by caller")
@@ -62,16 +57,11 @@ class DistributionService:
                 Recipient.id == r_id,
                 Recipient.owner_id == owner.id,
             ).first()
-            if not recipient:
+            if not recipient or recipient.status != "ACTIVE":
                 continue
 
-            if recipient.status != "ACTIVE":
-                continue
-
-            # 1. Generate unique random watermark ID
             watermark_id = generate_watermark_id()
 
-            # 2. Embed invisible forensic watermark
             if is_pdf:
                 watermarked_bytes = WatermarkEngine.embed_watermark_in_pdf(original_bytes, watermark_id)
             elif is_txt:
@@ -79,13 +69,9 @@ class DistributionService:
                 wm_text = WatermarkEngine.embed_watermark_in_text(text_content, watermark_id)
                 watermarked_bytes = wm_text.encode("utf-8")
             else:
-                # Unsupported for watermark embedding, pass original bytes
                 watermarked_bytes = original_bytes
 
-            # 3. Generate distinct ephemeral DEK
             dek = generate_dek()
-
-            # 4. Wrap DEK with recipient public key
             rec_pub = x25519_public_from_bytes(b64decode_str(recipient.public_key))
             envelope = wrap_dek_for_recipient(
                 dek=dek,
@@ -94,11 +80,9 @@ class DistributionService:
                 document_id=doc.id,
             )
 
-            # 5. Encrypt watermarked copy with AES-256-GCM
             aad = f"{doc.id}:{watermark_id}".encode("utf-8")
             ciphertext, nonce = encrypt_bytes_aes_gcm(watermarked_bytes, dek, associated_data=aad)
 
-            # 6. Save recipient package
             dist_id = f"DIST-{watermark_id.replace('WM-', '')}"
             pkg = OnlineRecipientPackage(
                 document_id=doc.id,
@@ -116,7 +100,6 @@ class DistributionService:
             with open(pkg_path, "wb") as pf:
                 pf.write(pkg.serialize())
 
-            # 7. Store encrypted forensic record in database
             enc_payload, enc_nonce = encrypt_forensic_mapping(
                 document_id=doc.id,
                 watermark_id=watermark_id,
@@ -136,7 +119,6 @@ class DistributionService:
             )
             db.add(wm_record)
 
-            # 8. Store distribution record
             dist = Distribution(
                 id=dist_id,
                 document_id=doc.id,
@@ -159,3 +141,123 @@ class DistributionService:
             })
 
         return results
+
+    @staticmethod
+    def create_unified_package(
+        db: Session,
+        owner: User,
+        document_id: str,
+        recipient_ids: List[str],
+    ) -> Tuple[UnifiedMultiRecipientPackage, Path]:
+        """Create ONE single unified encrypted container (.secure) for ALL authorized recipients.
+        
+        Benefits:
+        1. Owner distributes ONE single file to everyone (email attachment, USB, portal).
+        2. Cryptographic access control: only authorized recipients can decrypt.
+        3. Forensic watermarking: each recipient decrypts their individually watermarked copy.
+        """
+        doc = db.query(Document).filter(Document.id == document_id, Document.owner_id == owner.id).first()
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found or not owned by caller")
+
+        doc_path = Path(doc.storage_path)
+        if not doc_path.is_file():
+            raise HTTPException(status_code=500, detail="Document storage file missing")
+
+        with open(doc_path, "rb") as f:
+            original_bytes = f.read()
+
+        is_pdf = doc.original_filename.lower().endswith(".pdf")
+        is_txt = doc.original_filename.lower().endswith(".txt")
+
+        # Owner signing key pair for package authenticity
+        owner_sign_priv, owner_sign_pub = generate_ed25519_keypair()
+
+        package_id = f"PKG-UNIFIED-{doc.id.replace('DOC-', '')}"
+        recipient_slots = []
+
+        for r_id in recipient_ids:
+            recipient = db.query(Recipient).filter(
+                Recipient.id == r_id,
+                Recipient.owner_id == owner.id,
+            ).first()
+            if not recipient or recipient.status != "ACTIVE":
+                continue
+
+            watermark_id = generate_watermark_id()
+
+            if is_pdf:
+                watermarked_bytes = WatermarkEngine.embed_watermark_in_pdf(original_bytes, watermark_id)
+            elif is_txt:
+                text_content = original_bytes.decode("utf-8", errors="replace")
+                wm_text = WatermarkEngine.embed_watermark_in_text(text_content, watermark_id)
+                watermarked_bytes = wm_text.encode("utf-8")
+            else:
+                watermarked_bytes = original_bytes
+
+            dek = generate_dek()
+            rec_pub = x25519_public_from_bytes(b64decode_str(recipient.public_key))
+            envelope = wrap_dek_for_recipient(
+                dek=dek,
+                recipient_public_key=rec_pub,
+                recipient_id=recipient.id,
+                document_id=doc.id,
+            )
+
+            aad = f"{doc.id}:{watermark_id}".encode("utf-8")
+            ciphertext, nonce = encrypt_bytes_aes_gcm(watermarked_bytes, dek, associated_data=aad)
+
+            recipient_slots.append({
+                "recipient_id": recipient.id,
+                "recipient_name": recipient.name,
+                "watermark_id": watermark_id,
+                "envelope": envelope,
+                "nonce": b64encode_str(nonce),
+                "ciphertext": b64encode_str(ciphertext),
+            })
+
+            # Store encrypted forensic record
+            enc_payload, enc_nonce = encrypt_forensic_mapping(
+                document_id=doc.id,
+                watermark_id=watermark_id,
+                recipient_id=recipient.id,
+                extra_metadata={
+                    "recipient_name": recipient.name,
+                    "recipient_email": recipient.email,
+                    "original_filename": doc.original_filename,
+                    "unified_package_id": package_id,
+                },
+            )
+
+            wm_record = WatermarkRecord(
+                watermark_id=watermark_id,
+                document_id=doc.id,
+                encrypted_recipient_payload=enc_payload,
+                nonce=enc_nonce,
+            )
+            db.add(wm_record)
+
+        if not recipient_slots:
+            raise HTTPException(status_code=400, detail="No active approved recipients selected")
+
+        # Create unified package
+        unified_pkg = UnifiedMultiRecipientPackage(
+            package_id=package_id,
+            document_id=doc.id,
+            original_filename=doc.original_filename,
+            original_sha256=doc.original_sha256,
+            owner_id=owner.id,
+            owner_public_sign_key=b64encode_str(ed25519_public_to_bytes(owner_sign_pub)),
+            recipient_slots=recipient_slots,
+        )
+        unified_pkg.sign_package(owner_sign_priv)
+
+        # Save single file to disk
+        filename_stem = Path(doc.original_filename).stem
+        unified_filename = f"{filename_stem}_{doc.id}_ALL_RECIPIENTS.secure"
+        unified_path = settings.ENCRYPTED_DIR / unified_filename
+        with open(unified_path, "wb") as f:
+            f.write(unified_pkg.serialize())
+
+        db.commit()
+        return unified_pkg, unified_path

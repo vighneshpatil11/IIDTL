@@ -1,4 +1,4 @@
-"""Distribution and recipient package access API endpoints."""
+"""Distribution and recipient package access API endpoints (per-recipient .enc and single-file .secure)."""
 
 import os
 from pathlib import Path
@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import List, Dict, Any, Optional
 
+from online.backend.app.config import settings
 from online.backend.app.database.connection import get_db
 from online.backend.app.database.models import User, Distribution, Document, Recipient
 from online.backend.app.security.tokens import get_current_user, require_owner
@@ -35,7 +36,7 @@ def create_distribution(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_owner),
 ):
-    """Distribute document to selected recipients with unique watermarks and key envelopes."""
+    """Distribute individual recipient packages (.enc)."""
     results = DistributionService.distribute_document(
         db=db,
         owner=current_user,
@@ -47,6 +48,55 @@ def create_distribution(
         "distributed_count": len(results),
         "distributions": results,
     }
+
+
+@router.post("/create-unified")
+def create_unified_distribution(
+    req: CreateDistributionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_owner),
+):
+    """Create ONE single unified encrypted container (.secure) for ALL selected recipients.
+    
+    The document owner can send this one file to all recipients.
+    Each recipient's private key unlocks only their specific slot and watermarked copy.
+    """
+    pkg, out_path = DistributionService.create_unified_package(
+        db=db,
+        owner=current_user,
+        document_id=req.document_id,
+        recipient_ids=req.recipient_ids,
+    )
+    return {
+        "status": "success",
+        "package_id": pkg.package_id,
+        "document_id": pkg.document_id,
+        "original_filename": pkg.original_filename,
+        "original_sha256": pkg.original_sha256,
+        "authorized_recipients_count": len(pkg.recipient_slots),
+        "authorized_recipients": [
+            {"id": s["recipient_id"], "name": s["recipient_name"], "watermark_id": s["watermark_id"]}
+            for s in pkg.recipient_slots
+        ],
+        "filename": out_path.name,
+        "download_url": f"/api/v1/distributions/download-unified/{out_path.name}",
+    }
+
+
+@router.get("/download-unified/{filename}")
+def download_unified_package(
+    filename: str,
+):
+    """Download the single unified multi-recipient package (.secure)."""
+    path = settings.ENCRYPTED_DIR / filename
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Unified package file not found")
+
+    return FileResponse(
+        path=path,
+        media_type="application/octet-stream",
+        filename=filename,
+    )
 
 
 @router.get("/document/{document_id}")
@@ -82,14 +132,13 @@ def download_recipient_package(
     distribution_id: str,
     db: Session = Depends(get_db),
 ):
-    """Download encrypted package (.enc). Public or authenticated endpoint for recipients."""
+    """Download individual recipient package (.enc)."""
     dist = db.query(Distribution).filter(Distribution.id == distribution_id).first()
     if not dist:
         raise HTTPException(status_code=404, detail="Distribution package not found")
 
     rec = db.query(Recipient).filter(Recipient.id == dist.recipient_id).first()
     if rec and rec.status == "REVOKED":
-        # Log denied download attempt
         AuditService.log_event(
             db=db,
             document_id=dist.document_id,
@@ -103,7 +152,6 @@ def download_recipient_package(
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Package file not found on disk")
 
-    # Record download event
     AuditService.log_event(
         db=db,
         document_id=dist.document_id,
@@ -126,13 +174,13 @@ def log_recipient_access(
 ):
     """Record access/decryption event reported by recipient application."""
     dist = db.query(Distribution).filter(Distribution.id == req.distribution_id).first()
-    if not dist:
-        raise HTTPException(status_code=404, detail="Distribution not found")
+    doc_id = dist.document_id if dist else "UNKNOWN_DOC"
+    rec_id = dist.recipient_id if dist else None
 
     log = AuditService.log_event(
         db=db,
-        document_id=dist.document_id,
-        recipient_id=dist.recipient_id,
+        document_id=doc_id,
+        recipient_id=rec_id,
         event_type=req.event_type,
         result=req.result,
         user_agent=req.details,

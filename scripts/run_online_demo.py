@@ -20,10 +20,17 @@ from online.backend.app.database.connection import SessionLocal, init_db
 from online.backend.app.api.auth import register_user, login_for_access_token, RegisterRequest
 from online.backend.app.api.documents import upload_document
 from online.backend.app.api.recipients import create_recipient, CreateRecipientRequest
-from online.backend.app.api.distribution import create_distribution, download_recipient_package, CreateDistributionRequest
+from online.backend.app.api.distribution import (
+    create_distribution,
+    download_recipient_package,
+    create_unified_distribution,
+    download_unified_package,
+    CreateDistributionRequest,
+)
 from online.backend.app.api.investigation import analyze_leaked_document
 from shared.crypto.key_exchange import generate_x25519_keypair, x25519_public_to_bytes
-from shared.models.package import OnlineRecipientPackage
+from shared.models.package import OnlineRecipientPackage, UnifiedMultiRecipientPackage
+from shared.crypto.exceptions import AuthorizationError
 from shared.utils.serialization import b64encode_str
 
 
@@ -142,9 +149,54 @@ def run():
     print(f"  - Distribution Date:      {inv_result['associated_recipient']['registered_distribution_date']}")
     print(f"\n  [ATTRIBUTION STATEMENT]:\n  \"{inv_result['attribution_statement']}\"")
 
+    # Step 7: Unified Single-File Distribution Demo (User Request: ONE file for all recipients)
+    print("\n" + "=" * 80)
+    print("[STEP 7] DEMO C: UNIFIED SINGLE-FILE DISTRIBUTION (ONE Encrypted File For All)")
+    print("=" * 80)
+    print("  [*] Scenario: Owner wants to distribute ONE single file to ALL recipients (email/USB).")
+    print("  [*] System builds a UnifiedMultiRecipientPackage (.secure) containing individual slots.")
+
+    unified_res = create_unified_distribution(dist_req, db, owner)
+    print(f"  [+] Created single file: {unified_res['filename']}")
+    print(f"      - Authorized recipients: {unified_res['authorized_recipients_count']}")
+    for r in unified_res["authorized_recipients"]:
+        print(f"        * Slot: {r['name']} ({r['id']}) -> Watermark: {r['watermark_id']}")
+
+    uni_file_resp = download_unified_package(unified_res["filename"])
+    with open(uni_file_resp.path, "rb") as f:
+        unified_file_bytes = f.read()
+    print(f"  [+] Single container file size: {len(unified_file_bytes)} bytes")
+
+    # Alice opens the single file
+    uni_container_a = UnifiedMultiRecipientPackage.deserialize(unified_file_bytes)
+    alice_doc_c, alice_wm_c = uni_container_a.decrypt_for_recipient(alice_priv)
+    print(f"  [+] Alice opens the single file: SUCCESS (Watermark: {alice_wm_c})")
+
+    # Bob opens the EXACT SAME single file
+    uni_container_b = UnifiedMultiRecipientPackage.deserialize(unified_file_bytes)
+    bob_doc_c, bob_wm_c = uni_container_b.decrypt_for_recipient(bob_priv)
+    print(f"  [+] Bob opens the EXACT SAME single file: SUCCESS (Watermark: {bob_wm_c})")
+    assert alice_wm_c != bob_wm_c, "Watermarks must be distinct!"
+
+    # Unauthorized party (David) tries to open the file
+    david_priv, _ = generate_x25519_keypair()
+    try:
+        uni_container_b.decrypt_for_recipient(david_priv)
+        print("  [-] FAILURE: David accessed the file!")
+    except AuthorizationError:
+        print("  [+] Unauthorized party (David) opens single file: REJECTED (No matching key slot)")
+
+    # Simulate Bob leaking his copy recovered from the single file
+    print("\n  [*] Leak Simulation: Bob's copy from the single file surfaces publicly...")
+    bob_leak_file = UploadFile(filename="bob_leaked_copy.pdf", file=io.BytesIO(bob_doc_c))
+    bob_inv = analyze_leaked_document(bob_leak_file, db, owner)
+    print(f"  [+] Forensic scan detects watermark: {bob_inv['extracted_watermark_id']}")
+    print(f"  [+] Associated recipient: {bob_inv['associated_recipient']['recipient_name']} ({bob_inv['associated_recipient']['recipient_id']})")
+    print(f"  [+] Confidence: {bob_inv['confidence_score'] * 100:.1f}%")
+
     db.close()
     print("\n" + "=" * 80)
-    print("ONLINE DEMO A & B COMPLETED SUCCESSFULLY")
+    print("ALL ONLINE DEMO SCENARIOS A, B & C COMPLETED SUCCESSFULLY")
     print("=" * 80)
 
 

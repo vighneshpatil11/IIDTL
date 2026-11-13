@@ -49,13 +49,8 @@ class WatermarkEngine:
         """
         try:
             reader = PdfReader(io.BytesIO(pdf_bytes))
-        except Exception as e:
-            return None, 0.0, {
-                "layers_checked": [],
-                "hits": [],
-                "status": "INVALID_OR_CORRUPT_PDF",
-                "error": str(e),
-            }
+        except Exception:
+            return pdf_bytes
         writer = PdfWriter()
 
         zw_marker = encode_watermark_zero_width(watermark_id)
