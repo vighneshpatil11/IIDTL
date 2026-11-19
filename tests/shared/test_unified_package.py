@@ -177,6 +177,19 @@ class TestUnifiedMultiRecipientPackage:
         with open(file_resp.path, "rb") as f:
             downloaded_bytes = f.read()
 
+        # Test the decrypt-and-download API endpoint
+        from online.backend.app.api.distribution import decrypt_package_api, DecryptPackageRequest
+        from shared.crypto.key_exchange import x25519_private_to_bytes
+        dec_api_res = decrypt_package_api(
+            DecryptPackageRequest(
+                package_content=downloaded_bytes.decode("utf-8"),
+                private_key=b64encode_str(x25519_private_to_bytes(a_priv)),
+            ),
+            db=db,
+        )
+        assert dec_api_res["status"] == "success"
+        assert len(dec_api_res["file_bytes_b64"]) > 0
+
         # Alice decrypts the single file
         pkg_alice = UnifiedMultiRecipientPackage.deserialize(downloaded_bytes)
         alice_pdf, alice_wm = pkg_alice.decrypt_for_recipient(a_priv)

@@ -49,6 +49,13 @@ class Settings(BaseSettings):
 
     @property
     def DATABASE_URL(self) -> str:
+        env_db = os.getenv("DATABASE_URL")
+        if env_db and env_db.strip():
+            # SQLAlchemy expects 'postgresql://' instead of legacy 'postgres://'
+            clean_url = env_db.strip()
+            if clean_url.startswith("postgres://"):
+                clean_url = clean_url.replace("postgres://", "postgresql://", 1)
+            return clean_url
         return f"sqlite:///{self.STORAGE_DIR / 'online_system.db'}"
 
     # Forensic Master Key for Watermark Vault (32 bytes hex)

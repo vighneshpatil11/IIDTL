@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -10,10 +10,11 @@ from typing import List, Dict, Any, Optional
 
 from online.backend.app.config import settings
 from online.backend.app.database.connection import get_db
-from online.backend.app.database.models import User, Distribution, Document, Recipient
+from online.backend.app.database.models import User, Distribution, Document, Recipient, UnifiedPackageRecord
 from online.backend.app.security.tokens import get_current_user, require_owner
 from online.backend.app.services.distribution_service import DistributionService
 from online.backend.app.services.audit_service import AuditService
+from shared.utils.serialization import b64decode_str, b64encode_str
 
 router = APIRouter(prefix="/distributions", tags=["Distributions"])
 
@@ -86,17 +87,31 @@ def create_unified_distribution(
 @router.get("/download-unified/{filename}")
 def download_unified_package(
     filename: str,
+    db: Optional[Session] = Depends(get_db),
 ):
     """Download the single unified multi-recipient package (.secure)."""
     path = settings.ENCRYPTED_DIR / filename
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="Unified package file not found")
+    if path.is_file():
+        return FileResponse(
+            path=path,
+            media_type="application/octet-stream",
+            filename=filename,
+        )
 
-    return FileResponse(
-        path=path,
-        media_type="application/octet-stream",
-        filename=filename,
-    )
+    # Fallback to database record if running in serverless ephemeral storage
+    if db is not None and not isinstance(db, type(Depends)):
+        try:
+            record = db.query(UnifiedPackageRecord).filter(UnifiedPackageRecord.filename == filename).first()
+            if record and record.package_content_b64:
+                return Response(
+                    content=b64decode_str(record.package_content_b64),
+                    media_type="application/octet-stream",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+                )
+        except Exception:
+            pass
+
+    raise HTTPException(status_code=404, detail="Unified package file not found")
 
 
 @router.get("/document/{document_id}")
@@ -150,7 +165,20 @@ def download_recipient_package(
 
     path = Path(dist.encrypted_file_path)
     if not path.is_file():
-        raise HTTPException(status_code=404, detail="Package file not found on disk")
+        if getattr(dist, "package_content_b64", None):
+            AuditService.log_event(
+                db=db,
+                document_id=dist.document_id,
+                recipient_id=dist.recipient_id,
+                event_type="PACKAGE_DOWNLOAD",
+                result="SUCCESS",
+            )
+            return Response(
+                content=b64decode_str(dist.package_content_b64),
+                media_type="application/octet-stream",
+                headers={"Content-Disposition": f'attachment; filename="{path.name}"'},
+            )
+        raise HTTPException(status_code=404, detail="Package file not found on disk or database")
 
     AuditService.log_event(
         db=db,
@@ -165,6 +193,111 @@ def download_recipient_package(
         media_type="application/octet-stream",
         filename=path.name,
     )
+
+
+class DecryptPackageRequest(BaseModel):
+    package_content: str
+    private_key: str
+    device_or_recipient_id: Optional[str] = None
+
+
+@router.post("/decrypt-package")
+def decrypt_package_api(
+    req: DecryptPackageRequest,
+    db: Session = Depends(get_db),
+):
+    """Decrypt an .enc or .secure package using the provided X25519 private key.
+    
+    Returns the recovered document bytes (base64-encoded) for direct browser download and viewing.
+    """
+    import json
+    from shared.crypto.key_exchange import x25519_private_from_bytes
+    from shared.models.package import OnlineRecipientPackage, UnifiedMultiRecipientPackage, OfflineMultiDevicePackage
+
+    try:
+        raw_priv_bytes = b64decode_str(req.private_key.strip())
+        priv_key = x25519_private_from_bytes(raw_priv_bytes)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid X25519 private key format: {e}")
+
+    try:
+        pkg_dict = json.loads(req.package_content.strip())
+        magic = pkg_dict.get("magic")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid package JSON content: {e}")
+
+    doc_id = pkg_dict.get("document_id", "DOC-UNKNOWN")
+    filename = pkg_dict.get("original_filename", "document.pdf")
+    watermark_id = None
+    recipient_id = req.device_or_recipient_id
+
+    try:
+        if magic == "SECURE_DOC_RECIPIENT_V1":
+            pkg = OnlineRecipientPackage.deserialize(req.package_content.encode("utf-8"))
+            doc_bytes = pkg.decrypt(priv_key)
+            watermark_id = pkg.watermark_id
+            recipient_id = pkg.recipient_id
+
+            AuditService.log_event(
+                db=db,
+                document_id=doc_id,
+                recipient_id=recipient_id,
+                event_type="DECRYPT_SUCCESS",
+                result="SUCCESS",
+                user_agent="Online Portal Decrypt & Download",
+            )
+        elif magic == "UNIFIED_SECURE_DOC_V1":
+            pkg_u = UnifiedMultiRecipientPackage.deserialize(req.package_content.encode("utf-8"))
+            doc_bytes, wm = pkg_u.decrypt_for_recipient(priv_key, recipient_id=req.device_or_recipient_id)
+            watermark_id = wm
+
+            AuditService.log_event(
+                db=db,
+                document_id=doc_id,
+                recipient_id=recipient_id or "UNIFIED_SLOT",
+                event_type="DECRYPT_SUCCESS",
+                result="SUCCESS",
+                user_agent="Unified Container Decrypt & Download",
+            )
+        elif magic == "SECURE_DOC_OFFLINE_V1":
+            pkg_off = OfflineMultiDevicePackage.deserialize(req.package_content.encode("utf-8"))
+            if not req.device_or_recipient_id:
+                raise HTTPException(status_code=400, detail="device_or_recipient_id required for offline package")
+            doc_bytes = pkg_off.decrypt_for_device(req.device_or_recipient_id, priv_key)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported package magic: {magic}")
+
+    except Exception as e:
+        AuditService.log_event(
+            db=db,
+            document_id=doc_id,
+            recipient_id=recipient_id,
+            event_type="DECRYPT_FAILED",
+            result="DENIED_ERROR",
+            user_agent=f"Decrypt failed: {e}",
+        )
+        raise HTTPException(status_code=403, detail=f"Decryption failed: {e}")
+
+    is_pdf = filename.lower().endswith(".pdf")
+    content_type = "application/pdf" if is_pdf else "text/plain"
+    preview_text = None
+    if not is_pdf:
+        try:
+            preview_text = doc_bytes.decode("utf-8", errors="replace")[:1000]
+        except Exception:
+            pass
+
+    return {
+        "status": "success",
+        "document_id": doc_id,
+        "filename": filename,
+        "watermark_id": watermark_id,
+        "recipient_id": recipient_id,
+        "content_type": content_type,
+        "file_size": len(doc_bytes),
+        "file_bytes_b64": b64encode_str(doc_bytes),
+        "preview_text": preview_text,
+    }
 
 
 @router.post("/log-access")

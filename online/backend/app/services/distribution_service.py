@@ -24,7 +24,7 @@ from shared.utils.identifiers import generate_watermark_id, generate_document_id
 from shared.utils.serialization import b64encode_str, b64decode_str
 from shared.watermark.engine import WatermarkEngine
 from online.backend.app.config import settings
-from online.backend.app.database.models import Document, Recipient, Distribution, WatermarkRecord, User
+from online.backend.app.database.models import Document, Recipient, Distribution, WatermarkRecord, User, UnifiedPackageRecord
 from online.backend.app.security.forensic_vault import encrypt_forensic_mapping
 
 
@@ -41,12 +41,18 @@ class DistributionService:
         if not doc:
             raise HTTPException(status_code=404, detail="Document not found or not owned by caller")
 
-        doc_path = Path(doc.storage_path)
-        if not doc_path.is_file():
-            raise HTTPException(status_code=500, detail="Document storage file missing")
-
-        with open(doc_path, "rb") as f:
-            original_bytes = f.read()
+        original_bytes = None
+        if getattr(doc, "file_content_b64", None):
+            try:
+                original_bytes = b64decode_str(doc.file_content_b64)
+            except Exception:
+                pass
+        if not original_bytes:
+            doc_path = Path(doc.storage_path)
+            if not doc_path.is_file():
+                raise HTTPException(status_code=500, detail="Document storage file missing and no database backup found")
+            with open(doc_path, "rb") as f:
+                original_bytes = f.read()
 
         results = []
         is_pdf = doc.original_filename.lower().endswith(".pdf")
@@ -97,8 +103,12 @@ class DistributionService:
 
             pkg_filename = f"{doc.id}_{recipient.id}_{watermark_id}.enc"
             pkg_path = settings.ENCRYPTED_DIR / pkg_filename
-            with open(pkg_path, "wb") as pf:
-                pf.write(pkg.serialize())
+            pkg_serialized = pkg.serialize()
+            try:
+                with open(pkg_path, "wb") as pf:
+                    pf.write(pkg_serialized)
+            except Exception:
+                pass
 
             enc_payload, enc_nonce = encrypt_forensic_mapping(
                 document_id=doc.id,
@@ -125,6 +135,7 @@ class DistributionService:
                 recipient_id=recipient.id,
                 watermark_id=watermark_id,
                 encrypted_file_path=str(pkg_path),
+                package_content_b64=b64encode_str(pkg_serialized),
                 envelope_json=json.dumps(envelope),
                 status="ACTIVE",
             )
@@ -160,12 +171,18 @@ class DistributionService:
         if not doc:
             raise HTTPException(status_code=404, detail="Document not found or not owned by caller")
 
-        doc_path = Path(doc.storage_path)
-        if not doc_path.is_file():
-            raise HTTPException(status_code=500, detail="Document storage file missing")
-
-        with open(doc_path, "rb") as f:
-            original_bytes = f.read()
+        original_bytes = None
+        if getattr(doc, "file_content_b64", None):
+            try:
+                original_bytes = b64decode_str(doc.file_content_b64)
+            except Exception:
+                pass
+        if not original_bytes:
+            doc_path = Path(doc.storage_path)
+            if not doc_path.is_file():
+                raise HTTPException(status_code=500, detail="Document storage file missing and no database backup found")
+            with open(doc_path, "rb") as f:
+                original_bytes = f.read()
 
         is_pdf = doc.original_filename.lower().endswith(".pdf")
         is_txt = doc.original_filename.lower().endswith(".txt")
@@ -252,12 +269,27 @@ class DistributionService:
         )
         unified_pkg.sign_package(owner_sign_priv)
 
-        # Save single file to disk
+        # Save single file to disk and record in database for persistent serverless downloads
         filename_stem = Path(doc.original_filename).stem
         unified_filename = f"{filename_stem}_{doc.id}_ALL_RECIPIENTS.secure"
         unified_path = settings.ENCRYPTED_DIR / unified_filename
-        with open(unified_path, "wb") as f:
-            f.write(unified_pkg.serialize())
+        serialized_unified = unified_pkg.serialize()
+        try:
+            with open(unified_path, "wb") as f:
+                f.write(serialized_unified)
+        except Exception:
+            pass
+
+        existing_record = db.query(UnifiedPackageRecord).filter(UnifiedPackageRecord.filename == unified_filename).first()
+        if not existing_record:
+            existing_record = UnifiedPackageRecord(
+                filename=unified_filename,
+                document_id=doc.id,
+                package_content_b64=b64encode_str(serialized_unified),
+            )
+            db.add(existing_record)
+        else:
+            existing_record.package_content_b64 = b64encode_str(serialized_unified)
 
         db.commit()
         return unified_pkg, unified_path

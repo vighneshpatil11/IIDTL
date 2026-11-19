@@ -9,6 +9,7 @@ from fastapi import UploadFile, HTTPException
 
 from shared.crypto.primitives import sha256_file
 from shared.utils.identifiers import generate_document_id
+from shared.utils.serialization import b64encode_str
 from online.backend.app.config import settings
 from online.backend.app.database.models import Document, User
 
@@ -36,6 +37,9 @@ class DocumentService:
 
         file_size = dest_path.stat().st_size
         file_hash = sha256_file(dest_path)
+        with open(dest_path, "rb") as f:
+            raw_bytes = f.read()
+        file_content_b64 = b64encode_str(raw_bytes)
 
         doc = Document(
             id=doc_id,
@@ -44,6 +48,7 @@ class DocumentService:
             original_sha256=file_hash,
             file_size=file_size,
             storage_path=str(dest_path),
+            file_content_b64=file_content_b64,
             status="ACTIVE",
         )
         db.add(doc)

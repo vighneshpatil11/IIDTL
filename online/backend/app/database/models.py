@@ -41,6 +41,7 @@ class Document(Base):
     original_sha256 = Column(String(64), nullable=False)
     file_size = Column(Integer, nullable=False)
     storage_path = Column(Text, nullable=False)
+    file_content_b64 = Column(Text, nullable=True)  # Persistent base64 content for serverless persistence
     status = Column(String(32), default="ACTIVE")  # ACTIVE, ARCHIVED, REVOKED
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
@@ -76,6 +77,7 @@ class Distribution(Base):
     recipient_id = Column(String(64), ForeignKey("recipients.id"), nullable=False)
     watermark_id = Column(String(64), unique=True, index=True, nullable=False)
     encrypted_file_path = Column(Text, nullable=False)
+    package_content_b64 = Column(Text, nullable=True)  # Persistent base64 content for serverless persistence
     envelope_json = Column(Text, nullable=False)  # Serialized recipient key envelope
     status = Column(String(32), default="ACTIVE")  # ACTIVE, REVOKED
     distributed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -126,3 +128,13 @@ class Investigation(Base):
     confidence_score = Column(Float, nullable=False)  # 0.0 to 1.0
     extraction_details = Column(Text, nullable=True)
     analyzed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class UnifiedPackageRecord(Base):
+    """Stored unified package for persistent download across serverless restarts."""
+    __tablename__ = "unified_packages"
+
+    filename = Column(String(255), primary_key=True)
+    document_id = Column(String(64), nullable=False)
+    package_content_b64 = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))

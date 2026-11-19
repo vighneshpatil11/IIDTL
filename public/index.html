@@ -100,8 +100,15 @@
           Sign In
         </button>
       </form>
-      <div class="mt-4 text-xs text-center text-slate-500">
-        Demo tip: Register as <b>Owner</b> to manage and distribute files, or test recipient decryption in Recipient Access.
+      <div class="mt-4 p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs space-y-2">
+        <div class="flex items-center justify-between text-slate-700 font-semibold">
+          <span><i class="fa-solid fa-key mr-1 text-blue-600"></i> Predefined Master Owner:</span>
+          <button type="button" onclick="app.fillAdminCredentials()" class="text-blue-600 hover:underline font-bold">Auto-Fill</button>
+        </div>
+        <div class="font-mono text-slate-600 text-[11px]">
+          Email: <span class="text-slate-900 font-bold">admin@docfortress.internal</span><br>
+          Pass: <span class="text-slate-900 font-bold">AdminMaster2026!</span>
+        </div>
       </div>
     </section>
 
@@ -392,6 +399,22 @@
           </div>
           <span id="decryptedDocMeta" class="text-xs text-slate-400"></span>
         </div>
+
+        <!-- Download & Open Action Bar -->
+        <div id="decryptedDownloadBar" class="flex flex-wrap items-center gap-3 p-3 bg-emerald-50 border border-emerald-200 rounded-lg">
+          <a id="btnDownloadDecrypted" href="#" download="decrypted_document.pdf"
+             class="inline-flex items-center space-x-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-semibold transition shadow-sm">
+            <i class="fa-solid fa-download"></i>
+            <span id="lblDownloadFilename">Download Decrypted File</span>
+          </a>
+          <a id="btnViewDecrypted" href="#" target="_blank"
+             class="inline-flex items-center space-x-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition shadow-sm">
+            <i class="fa-solid fa-file-lines"></i>
+            <span>Open in New Browser Tab</span>
+          </a>
+          <span id="decryptedFileSize" class="text-xs text-slate-500 font-mono"></span>
+        </div>
+
         <div class="bg-slate-50 p-4 rounded-lg border text-sm max-h-96 overflow-y-auto font-mono text-slate-800" id="decryptedContentPreview">
         </div>
       </div>
@@ -957,6 +980,12 @@
         }
       },
 
+      fillAdminCredentials() {
+        document.getElementById('authEmail').value = 'admin@docfortress.internal';
+        document.getElementById('authPassword').value = 'AdminMaster2026!';
+        this.setAuthMode('login');
+      },
+
       async handleClientDecrypt() {
         const fileInput = document.getElementById('clientPackageInput');
         const privKey = document.getElementById('clientPrivKeyInput').value.trim();
@@ -968,40 +997,60 @@
         const text = await file.text();
 
         try {
-          const pkg = JSON.parse(text);
-          if (pkg.magic !== 'SECURE_DOC_RECIPIENT_V1' && pkg.magic !== 'UNIFIED_SECURE_DOC_V1') {
-            throw new Error('Invalid package format or unsupported container magic: ' + (pkg.magic || 'none'));
-          }
+          // Call backend decrypt-package endpoint to recover exact file bytes
+          const res = await fetch('/api/v1/distributions/decrypt-package', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              package_content: text,
+              private_key: privKey,
+            }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || 'Decryption failed');
 
           // Decryption display container
           const container = document.getElementById('decryptedViewerContainer');
           const preview = document.getElementById('decryptedContentPreview');
           const meta = document.getElementById('decryptedDocMeta');
+          const btnDownload = document.getElementById('btnDownloadDecrypted');
+          const btnView = document.getElementById('btnViewDecrypted');
+          const lblDownload = document.getElementById('lblDownloadFilename');
+          const lblSize = document.getElementById('decryptedFileSize');
 
           container.classList.remove('hidden');
 
-          if (pkg.magic === 'UNIFIED_SECURE_DOC_V1') {
-            const slotsCount = pkg.recipient_slots ? pkg.recipient_slots.length : 0;
-            meta.innerText = `Unified Container: ${pkg.document_id} (${pkg.original_filename}) | ${slotsCount} Recipient Slot(s)`;
-            preview.innerText = `[UNIFIED MULTI-RECIPIENT CONTAINER PROTOCOL]\nPackage ID: ${pkg.package_id}\nDocument ID: ${pkg.document_id}\nOriginal File: ${pkg.original_filename}\nDocument SHA-256: ${pkg.original_sha256}\nOwner ID: ${pkg.owner_id}\nOwner Signature: ${pkg.signature ? pkg.signature.substring(0, 32) + '...' : 'Verified'}\n\n[SLOT RESOLUTION & CRYPTOGRAPHIC ACCESS CONTROL]\nMatching recipient slot for supplied X25519 credential...\nRecipient slot decrypted successfully via ECIES envelope.\nUnique recipient forensic watermark reconstructed in memory.\nPlaintext buffer protected from cross-slot leakage.`;
-          } else {
-            meta.innerText = `Package: ${pkg.document_id} | Watermark: ${pkg.watermark_id}`;
-            preview.innerText = `[SECURE VIEWER PROTOCOL]\nPackage verified for Recipient: ${pkg.recipient_id}\nKey Envelope: Verified\nWatermark Marker: ${pkg.watermark_id}\n\nDocument Plaintext recovered and rendered in protected buffer.\n[Encrypted Payload Hash: ${pkg.ciphertext.substring(0, 32)}...]`;
-
-            // Log access
-            fetch('/api/v1/distributions/log-access', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                distribution_id: pkg.distribution_id,
-                event_type: 'DECRYPT_SUCCESS',
-                result: 'SUCCESS',
-                details: 'Web Portal Viewer',
-              })
-            });
+          // Reconstruct binary Blob from base64
+          const byteChars = atob(data.file_bytes_b64);
+          const byteNums = new Array(byteChars.length);
+          for (let i = 0; i < byteChars.length; i++) {
+            byteNums[i] = byteChars.charCodeAt(i);
           }
+          const byteArray = new Uint8Array(byteNums);
+          const blob = new Blob([byteArray], { type: data.content_type });
+          const blobUrl = URL.createObjectURL(blob);
 
-          this.showAlert('Package envelope verified and decrypted successfully!', 'success');
+          const origName = data.filename || 'document.pdf';
+          const dlFilename = origName.startsWith('decrypted_') ? origName : `decrypted_${origName}`;
+          btnDownload.href = blobUrl;
+          btnDownload.download = dlFilename;
+          lblDownload.innerText = `Download (${dlFilename})`;
+          lblSize.innerText = `${(data.file_size / 1024).toFixed(1)} KB | Watermark: ${data.watermark_id || 'Embedded'}`;
+
+          btnView.href = blobUrl;
+
+          meta.innerText = `Document: ${data.document_id} (${origName}) | Watermark: ${data.watermark_id || 'Embedded'}`;
+          preview.innerText = `[SUCCESSFULLY DECRYPTED & WATERMARKED]\nDocument ID: ${data.document_id}\nFilename: ${origName}\nWatermark ID: ${data.watermark_id || 'N/A'}\nRecipient ID: ${data.recipient_id || 'N/A'}\nFile Size: ${data.file_size} bytes\nMIME Type: ${data.content_type}\n\n${data.preview_text ? "=== PLAINTEXT PREVIEW ===\n" + data.preview_text : "[Binary PDF document recovered. Click Download or Open in New Browser Tab above to view.]"}`;
+
+          // Automatically trigger browser download
+          const dlTrigger = document.createElement('a');
+          dlTrigger.href = blobUrl;
+          dlTrigger.download = dlFilename;
+          document.body.appendChild(dlTrigger);
+          dlTrigger.click();
+          document.body.removeChild(dlTrigger);
+
+          this.showAlert(`Decrypted successfully! Downloading ${dlFilename}...`, 'success');
         } catch (err) {
           this.showAlert('Decryption failed: ' + err.message, 'error');
         }
