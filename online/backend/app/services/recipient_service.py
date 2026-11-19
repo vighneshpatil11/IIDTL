@@ -12,7 +12,14 @@ from shared.utils.serialization import b64decode_str
 
 class RecipientService:
     @staticmethod
-    def create_recipient(db: Session, owner: User, name: str, email: str, public_key: str) -> Recipient:
+    def create_recipient(
+        db: Session,
+        owner: User,
+        name: str,
+        email: str,
+        public_key: str,
+        private_key: Optional[str] = None,
+    ) -> Recipient:
         """Register a new recipient with their X25519 public key."""
         # Validate public key format (must be 32 bytes base64)
         try:
@@ -31,6 +38,7 @@ class RecipientService:
             name=name,
             email=email,
             public_key=public_key,
+            private_key=private_key,
             status="ACTIVE",
         )
         db.add(rec)

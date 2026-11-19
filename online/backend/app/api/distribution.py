@@ -121,10 +121,48 @@ def get_my_shared_documents(
 ):
     """List all documents and packages distributed to the logged-in user."""
     import json
-    recs = db.query(Recipient).filter(Recipient.email.ilike(current_user.email)).all()
+    from shared.utils.identifiers import generate_recipient_id
+    from shared.crypto.key_exchange import (
+        generate_x25519_keypair,
+        x25519_public_to_bytes,
+        x25519_private_to_bytes,
+    )
+
+    clean_email = current_user.email.strip().lower()
+
+    # Ensure this user is enrolled as a recipient with valid keys
+    recs = db.query(Recipient).filter(Recipient.email.ilike(clean_email)).all()
+    if not recs:
+        # Auto-create recipient profile for this user
+        owner = db.query(User).filter(User.role == "OWNER").first()
+        owner_id = owner.id if owner else current_user.id
+        if not current_user.public_key or not getattr(current_user, "private_key", None):
+            priv_obj, pub_obj = generate_x25519_keypair()
+            current_user.public_key = b64encode_str(x25519_public_to_bytes(pub_obj))
+            current_user.private_key = b64encode_str(x25519_private_to_bytes(priv_obj))
+            db.commit()
+            db.refresh(current_user)
+
+        new_rec = Recipient(
+            id=generate_recipient_id(),
+            owner_id=owner_id,
+            name=current_user.full_name,
+            email=clean_email,
+            public_key=current_user.public_key,
+            private_key=getattr(current_user, "private_key", None),
+            status="ACTIVE",
+        )
+        db.add(new_rec)
+        db.commit()
+        db.refresh(new_rec)
+        recs = [new_rec]
+
     rec_ids = [r.id for r in recs]
+    user_emails = {clean_email} | {r.email.strip().lower() for r in recs}
 
     results = []
+
+    # 1. Query individual recipient packages (.enc)
     if rec_ids:
         dists = (
             db.query(Distribution)
@@ -139,6 +177,13 @@ def get_my_shared_documents(
             if getattr(d, "package_content_b64", None):
                 try:
                     pkg_json = b64decode_str(d.package_content_b64).decode("utf-8")
+                except Exception:
+                    pass
+            if not pkg_json and d.encrypted_file_path:
+                try:
+                    p = Path(d.encrypted_file_path)
+                    if p.is_file():
+                        pkg_json = p.read_text(encoding="utf-8")
                 except Exception:
                     pass
 
@@ -157,15 +202,40 @@ def get_my_shared_documents(
                 "package_json_str": pkg_json,
             })
 
-    # Check unified packages
+    # 2. Query unified multi-recipient packages (.secure)
     unified_records = db.query(UnifiedPackageRecord).order_by(UnifiedPackageRecord.created_at.desc()).all()
     for u in unified_records:
+        raw_json = None
+        if getattr(u, "package_content_b64", None):
+            try:
+                raw_json = b64decode_str(u.package_content_b64).decode("utf-8")
+            except Exception:
+                pass
+        if not raw_json and u.filename:
+            try:
+                p = settings.ENCRYPTED_DIR / u.filename
+                if p.is_file():
+                    raw_json = p.read_text(encoding="utf-8")
+            except Exception:
+                pass
+
+        if not raw_json:
+            continue
+
         try:
-            raw_json = b64decode_str(u.package_content_b64).decode("utf-8")
             pkg_data = json.loads(raw_json)
             slots = pkg_data.get("recipient_slots", [])
             for s in slots:
-                if s.get("recipient_id") in rec_ids:
+                s_rec_id = s.get("recipient_id")
+                s_rec_email = s.get("recipient_email", "").strip().lower()
+                s_rec_name = s.get("recipient_name", "").strip().lower()
+
+                # Match by enrolled Recipient ID, recipient email, or full name
+                if (
+                    (s_rec_id and s_rec_id in rec_ids)
+                    or (s_rec_email and s_rec_email in user_emails)
+                    or (s_rec_name and s_rec_name == current_user.full_name.strip().lower())
+                ):
                     results.append({
                         "package_type": "UNIFIED_SECURE",
                         "distribution_id": u.filename,
@@ -287,8 +357,9 @@ def decrypt_package_api(
     from shared.crypto.key_exchange import x25519_private_from_bytes
     from shared.models.package import OnlineRecipientPackage, UnifiedMultiRecipientPackage, OfflineMultiDevicePackage
 
+    clean_priv_key = req.private_key.strip().strip('"').strip("'").strip()
     try:
-        raw_priv_bytes = b64decode_str(req.private_key.strip())
+        raw_priv_bytes = b64decode_str(clean_priv_key)
         priv_key = x25519_private_from_bytes(raw_priv_bytes)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid X25519 private key format: {e}")
@@ -341,15 +412,30 @@ def decrypt_package_api(
             raise HTTPException(status_code=400, detail=f"Unsupported package magic: {magic}")
 
     except Exception as e:
+        err_msg = str(e)
+        if (
+            "unauthorized" in err_msg.lower()
+            or "not authorized" in err_msg.lower()
+            or "tag verification" in err_msg.lower()
+            or "keyenvelopeerror" in err_msg.lower()
+        ):
+            detail = (
+                "Cryptographic access denied: Your private key does not correspond to any authorized recipient "
+                "slot in this package. Please verify that this document was distributed to your email address "
+                "and that your private key matches the public key enrolled with the Document Owner."
+            )
+        else:
+            detail = f"Decryption failed: {err_msg}"
+
         AuditService.log_event(
             db=db,
             document_id=doc_id,
             recipient_id=recipient_id,
             event_type="DECRYPT_FAILED",
             result="DENIED_ERROR",
-            user_agent=f"Decrypt failed: {e}",
+            user_agent=f"Decrypt failed: {detail}",
         )
-        raise HTTPException(status_code=403, detail=f"Decryption failed: {e}")
+        raise HTTPException(status_code=403, detail=detail)
 
     is_pdf = filename.lower().endswith(".pdf")
     content_type = "application/pdf" if is_pdf else "text/plain"

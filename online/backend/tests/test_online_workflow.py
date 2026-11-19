@@ -223,3 +223,132 @@ def test_online_complete_lifecycle(db_session):
     assert "PACKAGE_DOWNLOAD" in event_types
     assert "DECRYPT_SUCCESS" in event_types
     assert "DOWNLOAD_ATTEMPT" in event_types
+
+
+def test_recipient_auto_keys_shared_docs_and_decryption(db_session):
+    """Test automatic keypair generation, auto-enrollment, Shared With Me, and 1-click decryption."""
+    import secrets
+    from online.backend.app.api.distribution import (
+        create_distribution,
+        create_unified_distribution,
+        get_my_shared_documents,
+        decrypt_package_api,
+        CreateDistributionRequest,
+        DecryptPackageRequest,
+    )
+    from shared.utils.serialization import b64decode_str
+
+    suffix = secrets.token_hex(4)
+
+    # 1. Register Owner
+    owner = register_user(
+        req=RegisterRequest(
+            email=f"owner_{suffix}@test.com",
+            full_name="Owner Admin",
+            password="Password123!",
+            role="OWNER",
+        ),
+        db=db_session,
+    )
+
+    # 2. Register Recipient (without providing public key)
+    recipient = register_user(
+        req=RegisterRequest(
+            email=f"rec_{suffix}@test.com",
+            full_name="Recipient User",
+            password="Password123!",
+            role="RECIPIENT",
+        ),
+        db=db_session,
+    )
+
+    # Verify auto-generated keys
+    assert recipient.public_key is not None
+    assert recipient.private_key is not None
+
+    # Verify auto-enrollment in Recipient table
+    owner_recipients = list_recipients(db=db_session, current_user=owner)
+    matching_rec = next((r for r in owner_recipients if r["email"] == recipient.email), None)
+    assert matching_rec is not None
+    assert matching_rec["public_key"] == recipient.public_key
+
+    # 3. Owner uploads document
+    pdf_bytes = make_test_pdf_bytes("Top Secret Strategy Doc")
+    doc_res = upload_document(
+        file=UploadFile(filename="Strategy.pdf", file=io.BytesIO(pdf_bytes)),
+        db=db_session,
+        current_user=owner,
+    )
+    doc_id = doc_res["id"]
+
+    # 4. Owner distributes document individually (.enc)
+    dist_res = create_distribution(
+        req=CreateDistributionRequest(
+            document_id=doc_id,
+            recipient_ids=[matching_rec["id"]],
+        ),
+        db=db_session,
+        current_user=owner,
+    )
+    assert dist_res["distributed_count"] == 1
+
+    # 5. Owner creates unified container (.secure)
+    uni_res = create_unified_distribution(
+        req=CreateDistributionRequest(
+            document_id=doc_id,
+            recipient_ids=[matching_rec["id"]],
+        ),
+        db=db_session,
+        current_user=owner,
+    )
+    assert uni_res["status"] == "success"
+
+    # 6. Recipient checks Shared with Me inbox
+    shared_docs = get_my_shared_documents(db=db_session, current_user=recipient)
+    assert len(shared_docs) >= 2
+
+    enc_pkg = next(d for d in shared_docs if d["package_type"] == "INDIVIDUAL_ENC")
+    uni_pkg = next(d for d in shared_docs if d["package_type"] == "UNIFIED_SECURE")
+
+    assert enc_pkg["package_json_str"] is not None
+    assert uni_pkg["package_json_str"] is not None
+
+    # 7. Recipient decrypts individual package (.enc) with their auto-generated private key
+    dec_res_enc = decrypt_package_api(
+        req=DecryptPackageRequest(
+            package_content=enc_pkg["package_json_str"],
+            private_key=recipient.private_key,
+        ),
+        db=db_session,
+    )
+    assert dec_res_enc["status"] == "success"
+    decrypted_bytes_enc = b64decode_str(dec_res_enc["file_bytes_b64"])
+    assert decrypted_bytes_enc.startswith(b"%PDF")
+
+    # 8. Recipient decrypts unified package (.secure) with their auto-generated private key
+    dec_res_uni = decrypt_package_api(
+        req=DecryptPackageRequest(
+            package_content=uni_pkg["package_json_str"],
+            private_key=recipient.private_key,
+        ),
+        db=db_session,
+    )
+    assert dec_res_uni["status"] == "success"
+    decrypted_bytes_uni = b64decode_str(dec_res_uni["file_bytes_b64"])
+    assert decrypted_bytes_uni.startswith(b"%PDF")
+
+    # 9. Verify unauthorized key is rejected
+    fake_priv, _ = generate_x25519_keypair()
+    from shared.crypto.key_exchange import x25519_private_to_bytes
+    fake_priv_b64 = b64encode_str(x25519_private_to_bytes(fake_priv))
+
+    with pytest.raises(Exception) as exc_info:
+        decrypt_package_api(
+            req=DecryptPackageRequest(
+                package_content=enc_pkg["package_json_str"],
+                private_key=fake_priv_b64,
+            ),
+            db=db_session,
+        )
+    assert "denied" in str(exc_info.value).lower()
+

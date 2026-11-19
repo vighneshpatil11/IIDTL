@@ -36,12 +36,26 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 def init_db() -> None:
-    """Create tables if they do not exist and seed the predefined master owner."""
+    """Create tables if they do not exist, run migrations, and seed the predefined master owner."""
     try:
         Base.metadata.create_all(bind=engine)
     except Exception as e:
         log.error(f"init_db create_all failed: {e}")
         return
+
+    # Safe lightweight schema migrations for existing databases
+    with engine.begin() as conn:
+        for stmt in [
+            "ALTER TABLE users ADD COLUMN private_key TEXT",
+            "ALTER TABLE recipients ADD COLUMN private_key TEXT",
+            "ALTER TABLE documents ADD COLUMN file_content_b64 TEXT",
+            "ALTER TABLE distributions ADD COLUMN package_content_b64 TEXT",
+        ]:
+            try:
+                from sqlalchemy import text
+                conn.execute(text(stmt))
+            except Exception:
+                pass  # Column already exists or table not ready
 
     owner_email = os.getenv("OWNER_EMAIL", "admin@docfortress.internal").strip().lower()
     owner_pass = os.getenv("OWNER_PASSWORD", "AdminMaster2026!").strip()

@@ -25,6 +25,7 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     role = Column(String(32), default="OWNER")  # OWNER, RECIPIENT
     public_key = Column(Text, nullable=True)  # Base64 X25519 public key
+    private_key = Column(Text, nullable=True)  # Base64 X25519 private key (convenience for recipient portal)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     documents = relationship("Document", back_populates="owner", cascade="all, delete-orphan")
@@ -60,6 +61,7 @@ class Recipient(Base):
     name = Column(String(255), nullable=False)
     email = Column(String(255), index=True, nullable=False)
     public_key = Column(Text, nullable=False)  # Base64 X25519 public key
+    private_key = Column(Text, nullable=True)  # Optional Base64 X25519 private key
     status = Column(String(32), default="ACTIVE")  # ACTIVE, REVOKED
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 

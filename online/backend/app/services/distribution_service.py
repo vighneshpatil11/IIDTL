@@ -227,6 +227,7 @@ class DistributionService:
             recipient_slots.append({
                 "recipient_id": recipient.id,
                 "recipient_name": recipient.name,
+                "recipient_email": recipient.email,
                 "watermark_id": watermark_id,
                 "envelope": envelope,
                 "nonce": b64encode_str(nonce),
