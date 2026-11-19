@@ -1,10 +1,13 @@
 """Main FastAPI application entry point for the Online Prototype."""
 
+import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from pathlib import Path
 
 from online.backend.app.config import settings
 from online.backend.app.database.connection import init_db
@@ -17,14 +20,25 @@ from online.backend.app.api import (
     audit,
 )
 
+log = logging.getLogger(__name__)
 
-# Ensure database tables exist at startup
-init_db()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup: initialise DB safely — won't crash the app if DB is unreachable."""
+    try:
+        init_db()
+    except Exception as e:
+        log.error(f"Startup init_db error: {e}")
+    yield
+    # Shutdown — nothing to clean up
+
 
 app = FastAPI(
     title=settings.APP_NAME,
     version="1.0.0",
     description="Secure Document Distribution with Cryptographic Access Control and Forensic Watermarking",
+    lifespan=lifespan,
 )
 
 # CORS middleware
@@ -36,17 +50,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Register API v1 routes (register under both /api/v1 and /v1 for maximum compatibility)
-for p in ["/api/v1", "/v1"]:
-    app.include_router(auth.router, prefix=p)
-    app.include_router(documents.router, prefix=p)
-    app.include_router(recipients.router, prefix=p)
-    app.include_router(distribution.router, prefix=p)
-    app.include_router(investigation.router, prefix=p)
-    app.include_router(audit.router, prefix=p)
+# Register API routes under both /api/v1 and /v1 for Vercel compatibility
+for prefix in ["/api/v1", "/v1"]:
+    app.include_router(auth.router, prefix=prefix)
+    app.include_router(documents.router, prefix=prefix)
+    app.include_router(recipients.router, prefix=prefix)
+    app.include_router(distribution.router, prefix=prefix)
+    app.include_router(investigation.router, prefix=prefix)
+    app.include_router(audit.router, prefix=prefix)
 
-
-from fastapi.responses import HTMLResponse
 
 # Health check
 @app.get("/health")
@@ -92,7 +104,7 @@ def root_view():
     return HTMLResponse(content=get_frontend_html(), status_code=200)
 
 
-# Mount web client UI if directory exists
+# Mount static files if directory exists
 frontend_dir = settings.BASE_DIR / "online" / "frontend" / "public"
 if frontend_dir.is_dir():
     try:
