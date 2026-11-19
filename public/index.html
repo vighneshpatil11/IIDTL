@@ -103,16 +103,6 @@
           Sign In
         </button>
       </form>
-      <div class="mt-4 p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs space-y-2">
-        <div class="flex items-center justify-between text-slate-700 font-semibold">
-          <span><i class="fa-solid fa-key mr-1 text-blue-600"></i> Predefined Master Owner:</span>
-          <button type="button" onclick="app.fillAdminCredentials()" class="text-blue-600 hover:underline font-bold">Auto-Fill</button>
-        </div>
-        <div class="font-mono text-slate-600 text-[11px]">
-          Email: <span class="text-slate-900 font-bold">admin@docfortress.internal</span><br>
-          Pass: <span class="text-slate-900 font-bold">AdminMaster2026!</span>
-        </div>
-      </div>
     </section>
 
     <!-- VIEW 2: OWNER DASHBOARD -->
@@ -981,12 +971,6 @@
         } catch (err) {
           this.showAlert(err.message, 'error');
         }
-      },
-
-      fillAdminCredentials() {
-        document.getElementById('authEmail').value = 'admin@docfortress.internal';
-        document.getElementById('authPassword').value = 'AdminMaster2026!';
-        this.setAuthMode('login');
       },
 
       async handleClientDecrypt() {
