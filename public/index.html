@@ -36,6 +36,9 @@
       <button onclick="app.switchTab('dashboard')" id="tab-dashboard" class="py-3 px-2 text-sm text-slate-600 hover:text-blue-600 tab-active">
         <i class="fa-solid fa-chart-line mr-1"></i> Dashboard
       </button>
+      <button onclick="app.switchTab('inbox')" id="tab-inbox" class="py-3 px-2 text-sm text-slate-600 hover:text-blue-600">
+        <i class="fa-solid fa-inbox mr-1"></i> Shared with Me
+      </button>
       <button onclick="app.switchTab('documents')" id="tab-documents" class="py-3 px-2 text-sm text-slate-600 hover:text-blue-600">
         <i class="fa-solid fa-file-shield mr-1"></i> Documents
       </button>
@@ -142,6 +145,38 @@
             <div class="font-semibold text-indigo-900 mb-1"><i class="fa-solid fa-fingerprint mr-1"></i> 3. Trace Leaks</div>
             <p class="text-xs text-indigo-700">Upload any leaked copy to automatically extract its watermark and trace the origin recipient.</p>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW: RECIPIENT INBOX (Documents Shared with Me) -->
+    <section id="view-inbox" class="hidden space-y-6">
+      <div class="flex justify-between items-center">
+        <div>
+          <h2 class="text-xl font-bold text-slate-900">Documents Shared with You</h2>
+          <p class="text-xs text-slate-500 mt-1">Confidential encrypted packages distributed specifically to your registered identity.</p>
+        </div>
+        <button onclick="app.loadMySharedDocuments()" class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs rounded-lg transition font-medium">
+          <i class="fa-solid fa-rotate mr-1"></i> Refresh
+        </button>
+      </div>
+
+      <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead class="bg-slate-50 text-slate-500 text-xs uppercase border-b border-slate-200">
+              <tr>
+                <th class="px-4 py-3">Document Title</th>
+                <th class="px-4 py-3">Package Format</th>
+                <th class="px-4 py-3">Shared By</th>
+                <th class="px-4 py-3">Date</th>
+                <th class="px-4 py-3 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="inboxTableBody" class="divide-y divide-slate-100">
+              <tr><td colspan="5" class="px-4 py-8 text-center text-slate-400 text-xs">No documents shared with your account yet.</td></tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </section>
@@ -408,6 +443,15 @@
           <span id="decryptedFileSize" class="text-xs text-slate-500 font-mono"></span>
         </div>
 
+        <!-- Live In-Browser PDF Preview (Option C) -->
+        <div id="pdfViewerFrameContainer" class="hidden w-full">
+          <div class="flex items-center justify-between bg-slate-100 p-2.5 rounded-t-lg border border-b-0 border-slate-300">
+            <span class="text-xs font-semibold text-slate-800"><i class="fa-solid fa-file-pdf text-rose-500 mr-1.5"></i> In-Browser Decrypted PDF Viewer</span>
+            <span class="text-xs text-slate-500 font-mono">Rendered In Protected Memory</span>
+          </div>
+          <iframe id="pdfPreviewIframe" class="w-full h-[600px] border border-slate-300 rounded-b-lg bg-white shadow-inner" src=""></iframe>
+        </div>
+
         <div class="bg-slate-50 p-4 rounded-lg border text-sm max-h-96 overflow-y-auto font-mono text-slate-800" id="decryptedContentPreview">
         </div>
       </div>
@@ -625,10 +669,30 @@
         badge.innerText = `${this.user.full_name} (${this.user.role})`;
         badge.classList.remove('hidden');
         document.getElementById('logoutBtn').classList.remove('hidden');
+
+        const isOwner = (this.user.role || '').toUpperCase() === 'OWNER';
+        // Toggle tabs based on role
+        ['tab-documents', 'tab-recipients', 'tab-distribution', 'tab-investigation', 'tab-audit'].forEach(id => {
+          const btn = document.getElementById(id);
+          if (btn) btn.classList.toggle('hidden', !isOwner);
+        });
+
+        const tabInbox = document.getElementById('tab-inbox');
+        if (tabInbox) tabInbox.classList.remove('hidden');
+
+        // Route default landing tab
+        if (!isOwner) {
+          const tabDash = document.getElementById('tab-dashboard');
+          if (tabDash) tabDash.classList.add('hidden');
+          this.switchTab('inbox');
+        } else {
+          const tabDash = document.getElementById('tab-dashboard');
+          if (tabDash) tabDash.classList.remove('hidden');
+        }
       },
 
       switchTab(tabId) {
-        const views = ['auth', 'dashboard', 'documents', 'recipients', 'distribution', 'recipientPortal', 'investigation', 'audit', 'settings'];
+        const views = ['auth', 'dashboard', 'inbox', 'documents', 'recipients', 'distribution', 'recipientPortal', 'investigation', 'audit', 'settings'];
         views.forEach(v => {
           const el = document.getElementById(`view-${v}`);
           if (el) el.classList.toggle('hidden', v !== tabId);
@@ -637,6 +701,7 @@
         });
 
         if (tabId === 'dashboard') this.loadDashboardData();
+        if (tabId === 'inbox') this.loadMySharedDocuments();
         if (tabId === 'documents') this.loadDocuments();
         if (tabId === 'recipients') this.loadRecipients();
         if (tabId === 'distribution') this.loadDistributionData();
@@ -973,6 +1038,82 @@
         }
       },
 
+      async loadMySharedDocuments() {
+        try {
+          const res = await fetch('/api/v1/distributions/my-shared-documents', {
+            headers: { 'Authorization': `Bearer ${this.token}` }
+          });
+          const docs = await res.json();
+          const tbody = document.getElementById('inboxTableBody');
+          if (!docs || !docs.length) {
+            tbody.innerHTML = '<tr><td colspan="5" class="px-4 py-8 text-center text-slate-400 text-xs"><i class="fa-solid fa-folder-open text-2xl mb-2 text-slate-300 block"></i>No documents have been distributed to your email address yet.</td></tr>';
+            return;
+          }
+
+          tbody.innerHTML = docs.map(d => `
+            <tr class="hover:bg-slate-50 transition">
+              <td class="px-4 py-3 font-semibold text-xs text-slate-800">
+                <i class="fa-solid fa-file-shield text-blue-500 mr-1.5"></i>${d.filename}
+                <div class="text-[11px] text-slate-400 font-mono mt-0.5">${d.document_id}</div>
+              </td>
+              <td class="px-4 py-3 text-xs">
+                <span class="px-2 py-0.5 rounded font-mono font-bold text-[11px] ${d.package_type === 'UNIFIED_SECURE' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}">
+                  ${d.package_type === 'UNIFIED_SECURE' ? '.secure (Unified)' : '.enc (Recipient)'}
+                </span>
+              </td>
+              <td class="px-4 py-3 text-xs text-slate-600">
+                ${d.sender_name}
+                <div class="text-[11px] text-slate-400">${d.sender_email}</div>
+              </td>
+              <td class="px-4 py-3 text-xs text-slate-500">
+                ${d.distributed_at ? new Date(d.distributed_at).toLocaleDateString() : 'Recent'}
+              </td>
+              <td class="px-4 py-3 text-right space-x-2">
+                <a href="${d.download_url}" target="_blank"
+                   class="inline-flex items-center px-2.5 py-1 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded transition">
+                  <i class="fa-solid fa-download mr-1"></i> Download Package
+                </a>
+                <button onclick="app.decryptFromInbox('${d.distribution_id}')"
+                        class="inline-flex items-center px-2.5 py-1 text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white rounded transition shadow-sm">
+                  <i class="fa-solid fa-lock-open mr-1"></i> Decrypt &amp; View
+                </button>
+              </td>
+            </tr>
+          `).join('');
+
+          this.inboxDocs = docs;
+        } catch (err) {
+          console.error(err);
+          this.showAlert('Could not load shared documents: ' + err.message, 'error');
+        }
+      },
+
+      async decryptFromInbox(distId) {
+        const item = (this.inboxDocs || []).find(d => d.distribution_id === distId);
+        if (!item) return;
+
+        let privKey = (document.getElementById('clientPrivKeyInput').value || '').trim();
+        if (!privKey) {
+          privKey = prompt("Please enter your recipient X25519 private key (Base64) to decrypt this document:");
+          if (!privKey) return;
+          document.getElementById('clientPrivKeyInput').value = privKey.trim();
+        }
+
+        this.switchTab('recipientPortal');
+
+        try {
+          let pkgText = item.package_json_str;
+          if (!pkgText) {
+            const dlRes = await fetch(item.download_url);
+            pkgText = await dlRes.text();
+          }
+
+          await this.executeDecryption(pkgText, privKey.trim());
+        } catch (err) {
+          this.showAlert('Decryption failed: ' + err.message, 'error');
+        }
+      },
+
       async handleClientDecrypt() {
         const fileInput = document.getElementById('clientPackageInput');
         const privKey = document.getElementById('clientPrivKeyInput').value.trim();
@@ -983,20 +1124,23 @@
         const file = fileInput.files[0];
         const text = await file.text();
 
+        await this.executeDecryption(text, privKey);
+      },
+
+      async executeDecryption(pkgText, privKey) {
         try {
-          // Call backend decrypt-package endpoint to recover exact file bytes
+          this.showAlert('Verifying cryptographic envelope and decrypting...', 'info');
           const res = await fetch('/api/v1/distributions/decrypt-package', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              package_content: text,
+              package_content: pkgText,
               private_key: privKey,
             }),
           });
           const data = await res.json();
           if (!res.ok) throw new Error(data.detail || 'Decryption failed');
 
-          // Decryption display container
           const container = document.getElementById('decryptedViewerContainer');
           const preview = document.getElementById('decryptedContentPreview');
           const meta = document.getElementById('decryptedDocMeta');
@@ -1004,6 +1148,8 @@
           const btnView = document.getElementById('btnViewDecrypted');
           const lblDownload = document.getElementById('lblDownloadFilename');
           const lblSize = document.getElementById('decryptedFileSize');
+          const pdfContainer = document.getElementById('pdfViewerFrameContainer');
+          const pdfIframe = document.getElementById('pdfPreviewIframe');
 
           container.classList.remove('hidden');
 
@@ -1027,9 +1173,19 @@
           btnView.href = blobUrl;
 
           meta.innerText = `Document: ${data.document_id} (${origName}) | Watermark: ${data.watermark_id || 'Embedded'}`;
-          preview.innerText = `[SUCCESSFULLY DECRYPTED & WATERMARKED]\nDocument ID: ${data.document_id}\nFilename: ${origName}\nWatermark ID: ${data.watermark_id || 'N/A'}\nRecipient ID: ${data.recipient_id || 'N/A'}\nFile Size: ${data.file_size} bytes\nMIME Type: ${data.content_type}\n\n${data.preview_text ? "=== PLAINTEXT PREVIEW ===\n" + data.preview_text : "[Binary PDF document recovered. Click Download or Open in New Browser Tab above to view.]"}`;
 
-          // Automatically trigger browser download
+          // OPTION C: Visual In-Browser Preview
+          if (data.content_type === 'application/pdf') {
+            pdfIframe.src = blobUrl;
+            pdfContainer.classList.remove('hidden');
+            preview.classList.add('hidden');
+          } else {
+            pdfContainer.classList.add('hidden');
+            preview.classList.remove('hidden');
+            preview.innerText = `[SUCCESSFULLY DECRYPTED & WATERMARKED]\nDocument ID: ${data.document_id}\nFilename: ${origName}\nWatermark ID: ${data.watermark_id || 'N/A'}\nRecipient ID: ${data.recipient_id || 'N/A'}\nFile Size: ${data.file_size} bytes\n\n=== PLAINTEXT CONTENT ===\n${data.preview_text || ''}`;
+          }
+
+          // OPTION C: Automatic Download Trigger
           const dlTrigger = document.createElement('a');
           dlTrigger.href = blobUrl;
           dlTrigger.download = dlFilename;
@@ -1037,7 +1193,7 @@
           dlTrigger.click();
           document.body.removeChild(dlTrigger);
 
-          this.showAlert(`Decrypted successfully! Downloading ${dlFilename}...`, 'success');
+          this.showAlert(`Decrypted successfully! Rendered in viewer and downloaded ${dlFilename}.`, 'success');
         } catch (err) {
           this.showAlert('Decryption failed: ' + err.message, 'error');
         }

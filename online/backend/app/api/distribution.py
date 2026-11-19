@@ -114,6 +114,79 @@ def download_unified_package(
     raise HTTPException(status_code=404, detail="Unified package file not found")
 
 
+@router.get("/my-shared-documents")
+def get_my_shared_documents(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List all documents and packages distributed to the logged-in user."""
+    import json
+    recs = db.query(Recipient).filter(Recipient.email.ilike(current_user.email)).all()
+    rec_ids = [r.id for r in recs]
+
+    results = []
+    if rec_ids:
+        dists = (
+            db.query(Distribution)
+            .filter(Distribution.recipient_id.in_(rec_ids))
+            .order_by(Distribution.distributed_at.desc())
+            .all()
+        )
+        for d in dists:
+            doc = d.document
+            sender = doc.owner if doc else None
+            pkg_json = None
+            if getattr(d, "package_content_b64", None):
+                try:
+                    pkg_json = b64decode_str(d.package_content_b64).decode("utf-8")
+                except Exception:
+                    pass
+
+            results.append({
+                "package_type": "INDIVIDUAL_ENC",
+                "distribution_id": d.id,
+                "document_id": d.document_id,
+                "filename": doc.original_filename if doc else "document.pdf",
+                "file_size": doc.file_size if doc else 0,
+                "sender_name": sender.full_name if sender else "Document Owner",
+                "sender_email": sender.email if sender else "",
+                "watermark_id": d.watermark_id,
+                "status": d.status,
+                "distributed_at": d.distributed_at.isoformat() if d.distributed_at else "",
+                "download_url": f"/api/v1/distributions/download/{d.id}",
+                "package_json_str": pkg_json,
+            })
+
+    # Check unified packages
+    unified_records = db.query(UnifiedPackageRecord).order_by(UnifiedPackageRecord.created_at.desc()).all()
+    for u in unified_records:
+        try:
+            raw_json = b64decode_str(u.package_content_b64).decode("utf-8")
+            pkg_data = json.loads(raw_json)
+            slots = pkg_data.get("recipient_slots", [])
+            for s in slots:
+                if s.get("recipient_id") in rec_ids:
+                    results.append({
+                        "package_type": "UNIFIED_SECURE",
+                        "distribution_id": u.filename,
+                        "document_id": u.document_id,
+                        "filename": pkg_data.get("original_filename", "document.pdf"),
+                        "file_size": len(raw_json.encode("utf-8")),
+                        "sender_name": "Document Owner",
+                        "sender_email": pkg_data.get("owner_id", "Owner"),
+                        "watermark_id": s.get("watermark_id", "N/A"),
+                        "status": "ACTIVE",
+                        "distributed_at": u.created_at.isoformat() if u.created_at else "",
+                        "download_url": f"/api/v1/distributions/download-unified/{u.filename}",
+                        "package_json_str": raw_json,
+                    })
+                    break
+        except Exception:
+            continue
+
+    return results
+
+
 @router.get("/document/{document_id}")
 def get_document_distributions(
     document_id: str,
