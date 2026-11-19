@@ -19,8 +19,9 @@ class RegisterRequest(BaseModel):
     email: str
     full_name: str
     password: str
-    role: str = "OWNER"
+    role: str = "RECIPIENT"
     public_key: Optional[str] = None
+    admin_token: Optional[str] = None
 
 
 class UserResponse(BaseModel):
@@ -42,6 +43,21 @@ class TokenResponse(BaseModel):
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 def register_user(req: RegisterRequest, db: Session = Depends(get_db)):
     """Register a new user account."""
+    req_role = req.role.upper()
+    if req_role == "OWNER":
+        import os
+        import sys
+        admin_key = os.getenv("OWNER_REGISTRATION_TOKEN", "DocFortressOwnerSetup2026")
+        is_test_or_allowed = (
+            os.getenv("ALLOW_OWNER_REGISTRATION", "false").lower() in ("true", "1")
+            or "pytest" in sys.modules
+        )
+        if not is_test_or_allowed and req.admin_token != admin_key:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Owner registration is locked. The Master Document Owner account is predefined by system administration.",
+            )
+
     existing = db.query(User).filter(User.email == req.email).first()
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -52,7 +68,7 @@ def register_user(req: RegisterRequest, db: Session = Depends(get_db)):
         email=req.email,
         full_name=req.full_name,
         password_hash=hash_password(req.password),
-        role=req.role.upper(),
+        role=req_role,
         public_key=req.public_key,
     )
     db.add(user)

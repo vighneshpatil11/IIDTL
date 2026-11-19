@@ -92,9 +92,12 @@
         <div id="regRoleField" class="hidden">
           <label class="block text-xs font-semibold text-slate-700 uppercase mb-1">Account Role</label>
           <select id="authRole" class="w-full px-3 py-2 border rounded-lg text-sm bg-white">
-            <option value="OWNER">Document Owner (Distributor / Admin)</option>
             <option value="RECIPIENT">Recipient (Consumer)</option>
+            <option value="OWNER" disabled class="text-slate-400 bg-slate-100">🔒 Document Owner (Predefined - Locked)</option>
           </select>
+          <p class="text-[11px] text-slate-500 mt-1">
+            <i class="fa-solid fa-lock text-amber-500 mr-1"></i> Owner registration is locked. The Master Document Owner account is predefined.
+          </p>
         </div>
         <button type="submit" id="authSubmitBtn" class="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition shadow-sm">
           Sign In
