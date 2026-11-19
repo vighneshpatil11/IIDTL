@@ -135,7 +135,7 @@ class DistributionService:
                 recipient_id=recipient.id,
                 watermark_id=watermark_id,
                 encrypted_file_path=str(pkg_path),
-                package_content_b64=b64encode_str(pkg_serialized),
+                package_content_b64=None,
                 envelope_json=json.dumps(envelope),
                 status="ACTIVE",
             )
@@ -286,11 +286,11 @@ class DistributionService:
             existing_record = UnifiedPackageRecord(
                 filename=unified_filename,
                 document_id=doc.id,
-                package_content_b64=b64encode_str(serialized_unified),
+                package_content_b64=None,
             )
             db.add(existing_record)
         else:
-            existing_record.package_content_b64 = b64encode_str(serialized_unified)
+            existing_record.package_content_b64 = None
 
         db.commit()
         return unified_pkg, unified_path

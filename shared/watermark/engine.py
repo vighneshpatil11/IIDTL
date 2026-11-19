@@ -3,14 +3,13 @@
 import io
 import re
 from typing import Optional, Tuple, Dict, Any
+from reportlab.pdfgen import canvas
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import NameObject, create_string_object, ArrayObject, DictionaryObject, DecodedStreamObject
+from pypdf.generic import NameObject, ArrayObject
 
 from .zero_width import (
     encode_watermark_zero_width,
     extract_watermark_zero_width,
-    ZW_START,
-    ZW_END,
 )
 
 
@@ -43,67 +42,59 @@ class WatermarkEngine:
         """Embed multi-layer invisible forensic watermark in PDF bytes.
         
         Layers:
-        1. Text stream zero-width steganographic injection across pages.
-        2. Content stream invisible text operator injection (Tj with rendering mode 3 - invisible text).
-        3. Structural forensic marker embedded in page content stream dictionaries.
+        1. Clean ReportLab vector overlay with invisible micro-forensic text.
+        2. Merged content stream with standard ISO-compliant indirect objects.
+        3. Structural document catalog metadata containing the forensic payload.
         """
         try:
             reader = PdfReader(io.BytesIO(pdf_bytes))
+            if len(reader.pages) == 0:
+                return pdf_bytes
         except Exception:
             return pdf_bytes
-        writer = PdfWriter()
 
         zw_marker = encode_watermark_zero_width(watermark_id)
-        # Invisible text operator: 3 Tr (render mode invisible) /F1 1 Tf (text) Tj
-        # In PDF: `q 3 Tr (payload) Tj Q` ensures it is parsed by PDF text engines but completely invisible visually.
-        invisible_stream_content = f"\nq\n3 Tr\n/Helvetica 1 Tf\n({zw_marker}) Tj\nQ\n"
 
-        for page_idx, page in enumerate(reader.pages):
-            writer.add_page(page)
-            target_page = writer.pages[page_idx]
-
-            # Layer 1 & 2: Append invisible text rendering stream
-            try:
-                # In pypdf, we can attach or append to the page's contents
-                stream_obj = DecodedStreamObject()
-                stream_obj.set_data(invisible_stream_content.encode("utf-8"))
-                
-                contents = target_page.get("/Contents")
-                if contents is None:
-                    target_page[NameObject("/Contents")] = stream_obj
-                elif isinstance(contents, ArrayObject):
-                    contents.append(stream_obj)
-                else:
-                    # Single stream -> convert to array of streams
-                    new_array = ArrayObject([contents, stream_obj])
-                    target_page[NameObject("/Contents")] = new_array
-            except Exception:
-                pass
-
-        # Layer 3: Structural piece dictionary (Custom private dictionary, not standard /Info metadata)
-        # This attaches a forensic tracking object into the PDF document catalog
         try:
-            forensic_marker_dict = DictionaryObject({
-                NameObject("/Type"): NameObject("/ForensicWatermark"),
-                NameObject("/Payload"): create_string_object(zw_marker),
-                NameObject("/Encoding"): create_string_object("ZW-CRC16-V1"),
-            })
-            writer._root_object[NameObject("/ForensicPieceInfo")] = forensic_marker_dict
-        except Exception:
-            pass
+            writer = PdfWriter(clone_from=io.BytesIO(pdf_bytes))
+            for page in writer.pages:
+                try:
+                    pw = float(page.mediabox.width)
+                    ph = float(page.mediabox.height)
+                except Exception:
+                    pw, ph = 612.0, 792.0
 
-        out_stream = io.BytesIO()
-        writer.write(out_stream)
-        return out_stream.getvalue()
+                # Generate clean invisible overlay with ReportLab
+                ov_buf = io.BytesIO()
+                oc = canvas.Canvas(ov_buf, pagesize=(pw, ph))
+                oc.setFont("Helvetica", 0.1)
+                oc.setFillColorRGB(0.99, 0.99, 0.99, alpha=0.01)
+                oc.drawString(1, 1, f"DOCFORTRESS-WM:{watermark_id}")
+                oc.save()
+                ov_buf.seek(0)
+                ov_reader = PdfReader(ov_buf)
+                page.merge_page(ov_reader.pages[0])
+
+            writer.add_metadata({
+                "/ForensicWatermark": watermark_id,
+                "/ForensicPayload": zw_marker,
+            })
+
+            out_stream = io.BytesIO()
+            writer.write(out_stream)
+            return out_stream.getvalue()
+        except Exception:
+            # Fallback to original bytes if PDF structure prevents modification
+            return pdf_bytes
 
     @classmethod
     def extract_watermark_from_pdf(cls, pdf_bytes: bytes) -> Tuple[Optional[str], float, Dict[str, Any]]:
         """Extract invisible forensic watermark from recovered PDF bytes.
         
         Scans all layers:
-        - Layer 1: Page extracted text for zero-width characters.
-        - Layer 2: Raw content streams for invisible rendering operators (`3 Tr (...) Tj`).
-        - Layer 3: Structural forensic dictionary entries.
+        - Layer 1: Page extracted text for forensic markers and zero-width characters.
+        - Layer 2: Document catalog metadata.
+        - Layer 3: Raw content stream tokens.
         
         Returns:
             (watermark_id, confidence_score, telemetry)
@@ -117,6 +108,7 @@ class WatermarkEngine:
                 "status": "INVALID_OR_CORRUPT_PDF",
                 "error": str(e),
             }
+
         candidates: Dict[str, float] = {}
         layer_hits = []
 
@@ -124,6 +116,11 @@ class WatermarkEngine:
         for page_idx, page in enumerate(reader.pages):
             try:
                 text = page.extract_text() or ""
+                m = re.search(r"DOCFORTRESS-WM:(WM-[A-Za-z0-9_-]+)", text)
+                if m:
+                    candidates[m.group(1)] = max(candidates.get(m.group(1), 0.0), 1.0)
+                    layer_hits.append(f"page_{page_idx}_forensic_marker")
+
                 wm_id, conf = extract_watermark_zero_width(text)
                 if wm_id:
                     candidates[wm_id] = max(candidates.get(wm_id, 0.0), conf * 0.95)
@@ -131,7 +128,22 @@ class WatermarkEngine:
             except Exception:
                 continue
 
-        # 2. Raw content stream regex scan for embedded invisible operators
+        # 2. Document metadata
+        try:
+            meta = reader.metadata or {}
+            if "/ForensicWatermark" in meta:
+                meta_wm = str(meta["/ForensicWatermark"])
+                candidates[meta_wm] = max(candidates.get(meta_wm, 0.0), 1.0)
+                layer_hits.append("document_catalog_metadata")
+            if "/ForensicPayload" in meta:
+                wm_id, conf = extract_watermark_zero_width(str(meta["/ForensicPayload"]))
+                if wm_id:
+                    candidates[wm_id] = max(candidates.get(wm_id, 0.0), 1.0)
+                    layer_hits.append("document_catalog_payload")
+        except Exception:
+            pass
+
+        # 3. Raw content streams
         try:
             for page_idx, page in enumerate(reader.pages):
                 contents = page.get("/Contents")
@@ -144,28 +156,20 @@ class WatermarkEngine:
 
                 for s in raw_streams:
                     decoded_text = s.decode("latin1", errors="ignore")
+                    m = re.search(r"DOCFORTRESS-WM:(WM-[A-Za-z0-9_-]+)", decoded_text)
+                    if m:
+                        candidates[m.group(1)] = max(candidates.get(m.group(1), 0.0), 1.0)
+                        layer_hits.append(f"page_{page_idx}_raw_content_stream")
                     wm_id, conf = extract_watermark_zero_width(decoded_text)
                     if wm_id:
                         candidates[wm_id] = max(candidates.get(wm_id, 0.0), 0.98)
-                        layer_hits.append(f"page_{page_idx}_raw_content_stream")
-        except Exception:
-            pass
-
-        # 3. Structural piece info dictionary
-        try:
-            if "/ForensicPieceInfo" in reader.trailer["/Root"]:
-                f_dict = reader.trailer["/Root"]["/ForensicPieceInfo"].get_object()
-                payload_str = f_dict.get("/Payload", "")
-                wm_id, conf = extract_watermark_zero_width(str(payload_str))
-                if wm_id:
-                    candidates[wm_id] = max(candidates.get(wm_id, 0.0), 1.0)
-                    layer_hits.append("structural_piece_info")
+                        layer_hits.append(f"page_{page_idx}_raw_zero_width")
         except Exception:
             pass
 
         if not candidates:
             return None, 0.0, {
-                "layers_checked": ["extracted_text", "raw_content_streams", "piece_info"],
+                "layers_checked": ["extracted_text", "document_metadata", "raw_content_streams"],
                 "hits": [],
                 "status": "NO_WATERMARK_DETECTED",
             }
@@ -175,7 +179,7 @@ class WatermarkEngine:
         confidence = candidates[best_wm_id]
 
         telemetry = {
-            "layers_checked": ["extracted_text", "raw_content_streams", "piece_info"],
+            "layers_checked": ["extracted_text", "document_metadata", "raw_content_streams"],
             "hits": layer_hits,
             "status": "MATCH_CONFIRMED" if confidence >= 0.8 else "SUSPICIOUS_WEAK_MATCH",
             "candidate_count": len(candidates),

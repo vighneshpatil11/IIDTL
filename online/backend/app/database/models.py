@@ -133,10 +133,10 @@ class Investigation(Base):
 
 
 class UnifiedPackageRecord(Base):
-    """Stored unified package for persistent download across serverless restarts."""
+    """Metadata record for unified package distribution."""
     __tablename__ = "unified_packages"
 
     filename = Column(String(255), primary_key=True)
     document_id = Column(String(64), nullable=False)
-    package_content_b64 = Column(Text, nullable=False)
+    package_content_b64 = Column(Text, nullable=True)  # Optional; None when documents/packages are not stored on server
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))

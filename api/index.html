@@ -1221,10 +1221,16 @@
           let pkgText = item.package_json_str;
           if (!pkgText) {
             const dlRes = await fetch(item.download_url);
-            pkgText = await dlRes.text();
+            if (dlRes.ok) {
+              pkgText = await dlRes.text();
+            }
           }
 
-          await this.executeDecryption(pkgText, privKey.trim());
+          if (pkgText) {
+            await this.executeDecryption(pkgText, privKey.trim());
+          } else {
+            this.showAlert('Please choose your received .enc or .secure file below to decrypt.', 'info');
+          }
         } catch (err) {
           this.showAlert('Decryption failed: ' + err.message, 'error');
         }
@@ -1269,14 +1275,15 @@
 
           container.classList.remove('hidden');
 
-          // Reconstruct binary Blob from base64
-          const byteChars = atob(data.file_bytes_b64);
-          const byteNums = new Array(byteChars.length);
+          // Reconstruct binary Blob safely from base64 (removes whitespace/newlines)
+          const cleanB64 = (data.file_bytes_b64 || '').replace(/[^A-Za-z0-9+/=]/g, '');
+          const byteChars = atob(cleanB64);
+          const byteArray = new Uint8Array(byteChars.length);
           for (let i = 0; i < byteChars.length; i++) {
-            byteNums[i] = byteChars.charCodeAt(i);
+            byteArray[i] = byteChars.charCodeAt(i);
           }
-          const byteArray = new Uint8Array(byteNums);
-          const blob = new Blob([byteArray], { type: data.content_type });
+          const mimeType = (data.filename || '').toLowerCase().endsWith('.pdf') ? 'application/pdf' : (data.content_type || 'application/octet-stream');
+          const blob = new Blob([byteArray], { type: mimeType });
           const blobUrl = URL.createObjectURL(blob);
 
           const origName = data.filename || 'document.pdf';
