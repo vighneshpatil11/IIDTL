@@ -101,8 +101,16 @@ def get_frontend_html() -> str:
 @app.get("/api", response_class=HTMLResponse)
 @app.get("/api/", response_class=HTMLResponse)
 def root_view():
-    """Serve the single-page application frontend."""
-    return HTMLResponse(content=get_frontend_html(), status_code=200)
+    """Serve the single-page application frontend with no-cache headers."""
+    return HTMLResponse(
+        content=get_frontend_html(),
+        status_code=200,
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 # Mount static files if directory exists

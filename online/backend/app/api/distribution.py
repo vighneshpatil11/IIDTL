@@ -11,7 +11,7 @@ from typing import List, Dict, Any, Optional
 from online.backend.app.config import settings
 from online.backend.app.database.connection import get_db
 from online.backend.app.database.models import User, Distribution, Document, Recipient, UnifiedPackageRecord
-from online.backend.app.security.tokens import get_current_user, require_owner
+from online.backend.app.security.tokens import get_current_user, get_current_user_flexible, require_owner
 from online.backend.app.services.distribution_service import DistributionService
 from online.backend.app.services.audit_service import AuditService
 from shared.utils.serialization import b64decode_str, b64encode_str
@@ -88,7 +88,7 @@ def create_unified_distribution(
 def download_unified_package(
     filename: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_flexible),
 ):
     """Download the single unified multi-recipient package (.secure) with strict authorization checks."""
     import json

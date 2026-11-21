@@ -3,6 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
   <title>Secure Document Distribution Platform</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
@@ -377,11 +380,11 @@
             <p class="text-xs text-slate-500 mb-1 font-semibold">Individual Watermark Slots (one per recipient):</p>
             <div id="uniSlotList" class="space-y-1"></div>
           </div>
-          <a id="uniDownloadLink" href="#" target="_blank"
+          <button id="uniDownloadBtn" onclick="app.downloadUnifiedPackage()"
              class="inline-flex items-center space-x-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium transition">
             <i class="fa-solid fa-download"></i>
             <span>Download Unified .secure Package</span>
-          </a>
+          </button>
         </div>
       </div>
 
@@ -1056,8 +1059,9 @@
               </div>
             `).join('');
 
-            const link = document.getElementById('uniDownloadLink');
-            link.href = data.download_url;
+            const link = document.getElementById('uniDownloadBtn');
+            link.dataset.downloadUrl = data.download_url;
+            link.dataset.filename = data.package_id + '.secure';
           }
         } catch (err) {
           this.showAlert(err.message, 'error');
@@ -1095,9 +1099,9 @@
               <td class="px-4 py-3 font-mono text-xs text-blue-600 font-bold">${d.watermark_id}</td>
               <td class="px-4 py-3"><span class="px-2 py-0.5 rounded text-xs bg-emerald-100 text-emerald-800 font-semibold">DISTRIBUTED</span></td>
               <td class="px-4 py-3 text-right">
-                <a href="/api/v1/distributions/download/${d.distribution_id}" target="_blank" class="text-xs text-blue-600 hover:underline">
+                <button onclick="app.downloadProtectedFile('/api/v1/distributions/download/${d.distribution_id}', '${d.distribution_id}.enc')" class="text-xs text-blue-600 hover:underline">
                   <i class="fa-solid fa-download mr-1"></i> .enc Package
-                </a>
+                </button>
               </td>
             </tr>
           `).join('');
@@ -1191,10 +1195,10 @@
                 ${d.distributed_at ? new Date(d.distributed_at).toLocaleDateString() : 'Recent'}
               </td>
               <td class="px-4 py-3 text-right space-x-2">
-                <a href="${d.download_url}" target="_blank"
-                   class="inline-flex items-center px-2.5 py-1 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded transition">
+                <button onclick="app.downloadProtectedFile('${d.download_url}', '${d.filename || 'package'}')"
+                        class="inline-flex items-center px-2.5 py-1 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded transition">
                   <i class="fa-solid fa-download mr-1"></i> Download Package
-                </a>
+                </button>
                 <button onclick="app.decryptFromInbox('${d.distribution_id}')"
                         class="inline-flex items-center px-2.5 py-1 text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white rounded transition shadow-sm">
                   <i class="fa-solid fa-lock-open mr-1"></i> Decrypt &amp; View
@@ -1450,10 +1454,63 @@
         const el = document.getElementById(elementId);
         navigator.clipboard.writeText(el.value);
         this.showAlert('Copied to clipboard!', 'info');
-      }
+      },
+
+      async downloadProtectedFile(url, filename) {
+        try {
+          if (!this.token) return this.showAlert('Not authenticated. Please sign in first.', 'error');
+          this.showAlert('Preparing download...', 'info');
+          const res = await fetch(url, {
+            headers: { 'Authorization': `Bearer ${this.token}`, 'Cache-Control': 'no-cache' },
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({ detail: res.statusText }));
+            throw new Error(err.detail || `HTTP ${res.status}`);
+          }
+          const blob = await res.blob();
+          const blobUrl = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = blobUrl;
+          a.download = filename || 'download';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(blobUrl);
+          this.showAlert(`Downloaded: ${filename}`, 'success');
+        } catch (err) {
+          this.showAlert('Download failed: ' + err.message, 'error');
+        }
+      },
+
+      async downloadUnifiedPackage() {
+        const btn = document.getElementById('uniDownloadBtn');
+        if (!btn || !btn.dataset.downloadUrl) {
+          return this.showAlert('No package ready. Please create a unified distribution first.', 'error');
+        }
+        await this.downloadProtectedFile(btn.dataset.downloadUrl, btn.dataset.filename || 'package.secure');
+      },
     };
 
-    window.addEventListener('DOMContentLoaded', () => app.init());
+    window.addEventListener('DOMContentLoaded', () => {
+      app.init();
+      // Refresh live data whenever the tab regains focus (prevents stale cached state)
+      window.addEventListener('focus', () => {
+        if (app.token && app.user) {
+          const activeTab = document.querySelector('[class*="tab-active"]');
+          if (activeTab) {
+            const tabId = activeTab.id.replace('tab-', '');
+            if (['dashboard','inbox','documents','recipients','distribution','audit'].includes(tabId)) {
+              if (tabId === 'dashboard') app.loadDashboardData();
+              else if (tabId === 'inbox') app.loadMySharedDocuments();
+              else if (tabId === 'documents') app.loadDocuments();
+              else if (tabId === 'recipients') app.loadRecipients();
+              else if (tabId === 'distribution') app.loadDistributionData();
+              else if (tabId === 'audit') app.loadAuditLogs();
+            }
+          }
+        }
+      });
+    });
   </script>
 </body>
 </html>
