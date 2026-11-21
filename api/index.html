@@ -63,6 +63,9 @@
       <button onclick="app.switchTab('settings')" id="tab-settings" class="py-3 px-2 text-sm text-slate-600 hover:text-blue-600">
         <i class="fa-solid fa-sliders mr-1"></i> Keys & Settings
       </button>
+      <button onclick="app.refreshCurrentTab()" id="tab-refresh" class="hidden ml-auto py-2 px-3 text-xs text-slate-500 hover:text-blue-600 border border-slate-200 rounded my-auto" title="Refresh live data">
+        <i class="fa-solid fa-rotate-right mr-1"></i> Refresh
+      </button>
     </div>
   </nav>
 
@@ -681,6 +684,41 @@
         }
       },
 
+      /* ── Central fetch helper ─────────────────────────────────────────
+         • Always sends Authorization + no-cache headers
+         • Auto-logout on 401 (expired token)
+         • Returns parsed JSON or throws an Error with detail text
+         ────────────────────────────────────────────────────────────── */
+      async apiFetch(url, options = {}) {
+        const headers = {
+          'Cache-Control': 'no-cache, no-store',
+          'Pragma': 'no-cache',
+          ...(this.token ? { 'Authorization': `Bearer ${this.token}` } : {}),
+          ...(options.headers || {}),
+        };
+        const res = await fetch(url, { ...options, headers });
+        if (res.status === 401) {
+          this.logout();
+          throw new Error('Session expired — please sign in again.');
+        }
+        const ct = res.headers.get('content-type') || '';
+        const data = ct.includes('application/json') ? await res.json() : await res.text();
+        if (!res.ok) throw new Error((data && data.detail) || `Server error ${res.status}`);
+        return data;
+      },
+
+      /* ── Loading-state helpers ───────────────────────────────────────
+         Sets a table body to a "Loading…" or error row
+         ────────────────────────────────────────────────────────────── */
+      _tbodyLoading(id, cols) {
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = `<tr><td colspan="${cols}" class="px-4 py-6 text-center text-slate-400 text-xs"><i class="fa-solid fa-spinner fa-spin mr-1"></i>Loading…</td></tr>`;
+      },
+      _tbodyError(id, cols, msg) {
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = `<tr><td colspan="${cols}" class="px-4 py-6 text-center text-rose-500 text-xs"><i class="fa-solid fa-triangle-exclamation mr-1"></i>${msg}</td></tr>`;
+      },
+
       setAuthMode(mode) {
         this.authMode = mode;
         const isReg = mode === 'register';
@@ -762,6 +800,8 @@
         document.getElementById('navBar').classList.add('hidden');
         document.getElementById('userBadge').classList.add('hidden');
         document.getElementById('logoutBtn').classList.add('hidden');
+        const refreshBtn = document.getElementById('tab-refresh');
+        if (refreshBtn) refreshBtn.classList.add('hidden');
         this.switchTab('auth');
       },
 
@@ -771,6 +811,8 @@
         badge.innerText = `${this.user.full_name} (${this.user.role})`;
         badge.classList.remove('hidden');
         document.getElementById('logoutBtn').classList.remove('hidden');
+        const refreshBtn = document.getElementById('tab-refresh');
+        if (refreshBtn) refreshBtn.classList.remove('hidden');
 
         // Load private key from localStorage (server NEVER stores or returns private keys)
         const privInput = document.getElementById('clientPrivKeyInput');
@@ -858,13 +900,7 @@
         formData.append('file', input.files[0]);
 
         try {
-          const res = await fetch('/api/v1/documents/upload', {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${this.token}` },
-            body: formData,
-          });
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.detail || 'Upload failed');
+          const data = await this.apiFetch('/api/v1/documents/upload', { method: 'POST', body: formData });
           this.showAlert(`Document ${data.id} stored successfully!`, 'success');
           input.value = '';
           document.getElementById('uploadFileLabel').innerText = 'Click or drag PDF, TXT, or DOCX document here';
@@ -875,13 +911,11 @@
       },
 
       async loadDocuments() {
+        this._tbodyLoading('documentTableBody', 6);
         try {
-          const res = await fetch('/api/v1/documents/', {
-            headers: { 'Authorization': `Bearer ${this.token}` },
-          });
-          const docs = await res.json();
+          const docs = await this.apiFetch('/api/v1/documents/');
           const tbody = document.getElementById('documentTableBody');
-          if (!docs.length) {
+          if (!Array.isArray(docs) || !docs.length) {
             tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-6 text-center text-slate-400 text-xs">No documents uploaded yet.</td></tr>';
             return;
           }
@@ -896,7 +930,8 @@
             </tr>
           `).join('');
         } catch (err) {
-          console.error(err);
+          this._tbodyError('documentTableBody', 6, 'Failed to load documents: ' + err.message);
+          console.error('loadDocuments:', err);
         }
       },
 
@@ -907,16 +942,11 @@
         const publicKey = document.getElementById('recPubKey').value;
 
         try {
-          const res = await fetch('/api/v1/recipients/', {
+          const data = await this.apiFetch('/api/v1/recipients/', {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${this.token}`,
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name, email, public_key: publicKey }),
           });
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.detail || 'Enrollment failed');
           this.showAlert(`Recipient ${data.id} enrolled!`, 'success');
           document.getElementById('recName').value = '';
           document.getElementById('recEmail').value = '';
@@ -928,13 +958,11 @@
       },
 
       async loadRecipients() {
+        this._tbodyLoading('recipientTableBody', 6);
         try {
-          const res = await fetch('/api/v1/recipients/', {
-            headers: { 'Authorization': `Bearer ${this.token}` },
-          });
-          const recs = await res.json();
+          const recs = await this.apiFetch('/api/v1/recipients/');
           const tbody = document.getElementById('recipientTableBody');
-          if (!recs.length) {
+          if (!Array.isArray(recs) || !recs.length) {
             tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-6 text-center text-slate-400 text-xs">No recipients enrolled yet.</td></tr>';
             return;
           }
@@ -957,21 +985,18 @@
             </tr>
           `).join('');
         } catch (err) {
-          console.error(err);
+          this._tbodyError('recipientTableBody', 6, 'Failed to load recipients: ' + err.message);
+          console.error('loadRecipients:', err);
         }
       },
 
       async toggleRecipientStatus(recipientId, newStatus) {
         try {
-          const res = await fetch(`/api/v1/recipients/${recipientId}/status`, {
+          await this.apiFetch(`/api/v1/recipients/${recipientId}/status`, {
             method: 'PUT',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${this.token}`,
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ status: newStatus }),
           });
-          if (!res.ok) throw new Error('Status update failed');
           this.showAlert(`Recipient status set to ${newStatus}`, 'info');
           this.loadRecipients();
         } catch (err) {
@@ -981,43 +1006,37 @@
 
       async loadDistributionData() {
         try {
-          const docRes = await fetch('/api/v1/documents/', { headers: { 'Authorization': `Bearer ${this.token}` } });
-          const docs = await docRes.json();
+          const [docs, recs] = await Promise.all([
+            this.apiFetch('/api/v1/documents/'),
+            this.apiFetch('/api/v1/recipients/'),
+          ]);
+
           const docOptions = '<option value="">Select an uploaded document...</option>' +
-            docs.map(d => `<option value="${d.id}">${d.original_filename} (${d.id})</option>`).join('');
+            (Array.isArray(docs) ? docs : []).map(d => `<option value="${d.id}">${d.original_filename} (${d.id})</option>`).join('');
           const docSelect = document.getElementById('distDocSelect');
           if (docSelect) docSelect.innerHTML = docOptions;
           const uniDocSelect = document.getElementById('unifiedDocSelect');
           if (uniDocSelect) uniDocSelect.innerHTML = docOptions;
 
-          const recRes = await fetch('/api/v1/recipients/', { headers: { 'Authorization': `Bearer ${this.token}` } });
-          const recs = await recRes.json();
+          const recList = Array.isArray(recs) ? recs : [];
           const recContainer = document.getElementById('distRecCheckboxContainer');
           const uniRecContainer = document.getElementById('unifiedRecCheckboxContainer');
-          if (!recs.length) {
+          if (!recList.length) {
             const emptyHtml = '<span class="text-xs text-slate-400">Enroll recipients first</span>';
             if (recContainer) recContainer.innerHTML = emptyHtml;
             if (uniRecContainer) uniRecContainer.innerHTML = emptyHtml;
           } else {
-            if (recContainer) {
-              recContainer.innerHTML = recs.map(r => `
-                <label class="flex items-center space-x-2 cursor-pointer ${r.status !== 'ACTIVE' ? 'opacity-50' : ''}">
-                  <input type="checkbox" name="distRec" value="${r.id}" ${r.status !== 'ACTIVE' ? 'disabled' : ''} class="rounded text-blue-600">
-                  <span class="text-xs text-slate-800">${r.name} (${r.email}) [${r.status}]</span>
-                </label>
-              `).join('');
-            }
-            if (uniRecContainer) {
-              uniRecContainer.innerHTML = recs.map(r => `
-                <label class="flex items-center space-x-2 cursor-pointer ${r.status !== 'ACTIVE' ? 'opacity-50' : ''}">
-                  <input type="checkbox" name="uniRec" value="${r.id}" ${r.status !== 'ACTIVE' ? 'disabled' : ''} class="rounded text-indigo-600">
-                  <span class="text-xs text-slate-800">${r.name} (${r.email}) [${r.status}]</span>
-                </label>
-              `).join('');
-            }
+            const makeCheckbox = (r, name) => `
+              <label class="flex items-center space-x-2 cursor-pointer ${r.status !== 'ACTIVE' ? 'opacity-50' : ''}">
+                <input type="checkbox" name="${name}" value="${r.id}" ${r.status !== 'ACTIVE' ? 'disabled' : ''} class="rounded text-blue-600">
+                <span class="text-xs text-slate-800">${r.name} (${r.email}) [${r.status}]</span>
+              </label>`;
+            if (recContainer) recContainer.innerHTML = recList.map(r => makeCheckbox(r, 'distRec')).join('');
+            if (uniRecContainer) uniRecContainer.innerHTML = recList.map(r => makeCheckbox(r, 'uniRec')).join('');
           }
         } catch (err) {
-          console.error(err);
+          console.error('loadDistributionData:', err);
+          this.showAlert('Could not load distribution data: ' + err.message, 'error');
         }
       },
 
@@ -1156,18 +1175,14 @@
       },
 
       async loadMySharedDocuments() {
+        this._tbodyLoading('inboxTableBody', 5);
         try {
           const inboxEmail = document.getElementById('inboxUserEmail');
-          if (inboxEmail && this.user) {
-            inboxEmail.innerText = this.user.email;
-          }
+          if (inboxEmail && this.user) inboxEmail.innerText = this.user.email;
 
-          const res = await fetch('/api/v1/distributions/my-shared-documents', {
-            headers: { 'Authorization': `Bearer ${this.token}` }
-          });
-          const docs = await res.json();
+          const docs = await this.apiFetch('/api/v1/distributions/my-shared-documents');
           const tbody = document.getElementById('inboxTableBody');
-          if (!docs || !docs.length) {
+          if (!Array.isArray(docs) || !docs.length) {
             tbody.innerHTML = `<tr><td colspan="5" class="px-4 py-8 text-center text-slate-400 text-xs">
               <i class="fa-solid fa-folder-open text-2xl mb-2 text-slate-300 block"></i>
               No documents have been distributed to <strong>${this.user ? this.user.email : 'your account'}</strong> yet.<br>
@@ -1209,8 +1224,8 @@
 
           this.inboxDocs = docs;
         } catch (err) {
-          console.error(err);
-          this.showAlert('Could not load shared documents: ' + err.message, 'error');
+          this._tbodyError('inboxTableBody', 5, 'Could not load inbox: ' + err.message);
+          console.error('loadMySharedDocuments:', err);
         }
       },
 
@@ -1379,13 +1394,11 @@
       },
 
       async loadAuditLogs() {
+        this._tbodyLoading('auditTableBody', 6);
         try {
-          const res = await fetch('/api/v1/audit/events', {
-            headers: { 'Authorization': `Bearer ${this.token}` },
-          });
-          const events = await res.json();
+          const events = await this.apiFetch('/api/v1/audit/events');
           const tbody = document.getElementById('auditTableBody');
-          if (!events.length) {
+          if (!Array.isArray(events) || !events.length) {
             tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-6 text-center text-slate-400 text-xs">No audit events logged yet.</td></tr>';
             return;
           }
@@ -1404,27 +1417,33 @@
             </tr>
           `).join('');
         } catch (err) {
-          console.error(err);
+          this._tbodyError('auditTableBody', 6, 'Failed to load audit log: ' + err.message);
+          console.error('loadAuditLogs:', err);
         }
       },
 
       async loadDashboardData() {
+        const setCounter = (id, val) => { const el = document.getElementById(id); if (el) el.innerText = val; };
+        setCounter('statDocCount', '…');
+        setCounter('statRecCount', '…');
+        setCounter('statDistCount', '…');
+        setCounter('statEventCount', '…');
         try {
-          const [docRes, recRes, auditRes] = await Promise.all([
-            fetch('/api/v1/documents/', { headers: { 'Authorization': `Bearer ${this.token}` } }),
-            fetch('/api/v1/recipients/', { headers: { 'Authorization': `Bearer ${this.token}` } }),
-            fetch('/api/v1/audit/events', { headers: { 'Authorization': `Bearer ${this.token}` } }),
+          const [docs, recs, audits] = await Promise.all([
+            this.apiFetch('/api/v1/documents/'),
+            this.apiFetch('/api/v1/recipients/'),
+            this.apiFetch('/api/v1/audit/events'),
           ]);
-          const docs = await docRes.json();
-          const recs = await recRes.json();
-          const audits = await auditRes.json();
-
-          document.getElementById('statDocCount').innerText = docs.length || 0;
-          document.getElementById('statRecCount').innerText = recs.filter(r => r.status === 'ACTIVE').length || 0;
-          document.getElementById('statDistCount').innerText = audits.filter(a => a.event_type === 'PACKAGE_DOWNLOAD').length || 0;
-          document.getElementById('statEventCount').innerText = audits.length || 0;
+          setCounter('statDocCount', Array.isArray(docs) ? docs.length : 0);
+          setCounter('statRecCount', Array.isArray(recs) ? recs.filter(r => r.status === 'ACTIVE').length : 0);
+          setCounter('statDistCount', Array.isArray(audits) ? audits.filter(a => a.event_type === 'PACKAGE_DOWNLOAD').length : 0);
+          setCounter('statEventCount', Array.isArray(audits) ? audits.length : 0);
         } catch (err) {
-          console.error(err);
+          setCounter('statDocCount', '!');
+          setCounter('statRecCount', '!');
+          setCounter('statDistCount', '!');
+          setCounter('statEventCount', '!');
+          console.error('loadDashboardData:', err);
         }
       },
 
@@ -1489,6 +1508,26 @@
         }
         await this.downloadProtectedFile(btn.dataset.downloadUrl, btn.dataset.filename || 'package.secure');
       },
+
+      /* Refresh whichever data tab is currently active */
+      refreshCurrentTab() {
+        const active = document.querySelector('.tab-active');
+        if (!active) return;
+        const tabId = active.id.replace('tab-', '');
+        const refreshMap = {
+          dashboard: () => this.loadDashboardData(),
+          inbox:     () => this.loadMySharedDocuments(),
+          documents: () => this.loadDocuments(),
+          recipients:() => this.loadRecipients(),
+          distribution: () => this.loadDistributionData(),
+          audit:     () => this.loadAuditLogs(),
+        };
+        if (refreshMap[tabId]) {
+          const icon = document.querySelector('#tab-refresh i');
+          if (icon) { icon.classList.add('fa-spin'); setTimeout(() => icon.classList.remove('fa-spin'), 1200); }
+          refreshMap[tabId]();
+        }
+      },
     };
 
     window.addEventListener('DOMContentLoaded', () => {
@@ -1510,6 +1549,10 @@
           }
         }
       });
+      // Auto-refresh every 30 seconds while logged in to stay live
+      setInterval(() => {
+        if (app.token && app.user) app.refreshCurrentTab();
+      }, 30000);
     });
   </script>
 </body>
