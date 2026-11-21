@@ -27,17 +27,24 @@ def _make_engine():
     try:
         return create_engine(db_url, **kwargs)
     except Exception as e:
-        fallback = "sqlite:////tmp/data/online/online_system.db"
-        log.error(f"DB engine creation failed ({e}), falling back to SQLite")
+        fallback_dir = Path("/tmp") / "data" / "online"
+        try:
+            fallback_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        fallback = f"sqlite:///{fallback_dir / 'online_system.db'}"
+        log.error(f"DB engine creation failed ({e}), falling back to SQLite at {fallback}")
         return create_engine(fallback, connect_args={"check_same_thread": False})
 
 
 engine = _make_engine()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+_db_initialized = False
 
 
 def init_db() -> None:
     """Create tables if they do not exist, run migrations, and seed the predefined master owner."""
+    global _db_initialized
     try:
         Base.metadata.create_all(bind=engine)
     except Exception as e:
@@ -83,6 +90,7 @@ def init_db() -> None:
                 "FATAL: OWNER_PASSWORD environment variable is not set. "
                 "Master owner account will NOT be seeded. Set OWNER_PASSWORD in your environment."
             )
+            _db_initialized = True
             return
         else:
             # Development fallback: use a strong ephemeral password and warn loudly
@@ -109,14 +117,31 @@ def init_db() -> None:
             )
             db.add(owner)
             db.commit()
-    except Exception:
+    except Exception as e:
+        log.error(f"Error seeding master owner: {e}")
         db.rollback()
     finally:
         db.close()
+    _db_initialized = True
+
+
+def ensure_db_initialized() -> None:
+    """Ensure database schema is created on serverless cold starts."""
+    global _db_initialized
+    if not _db_initialized:
+        try:
+            init_db()
+        except Exception as e:
+            log.error(f"ensure_db_initialized failed: {e}")
+
+
+# Initialize schema immediately at module load time for serverless safety
+ensure_db_initialized()
 
 
 def get_db() -> Generator[Session, None, None]:
     """FastAPI dependency to provide a transactional database session."""
+    ensure_db_initialized()
     db = SessionLocal()
     try:
         yield db

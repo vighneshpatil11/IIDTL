@@ -678,7 +678,8 @@
       init() {
         if (this.token && this.user) {
           this.renderAuthenticatedUI();
-          this.switchTab('dashboard');
+          const isOwner = (this.user.role || '').toUpperCase() === 'OWNER';
+          this.switchTab(isOwner ? 'dashboard' : 'inbox');
         } else {
           this.switchTab('auth');
         }
@@ -698,7 +699,7 @@
         };
         const res = await fetch(url, { ...options, headers });
         if (res.status === 401) {
-          this.logout();
+          this.logout('Session expired or authentication failed. Please sign in again.');
           throw new Error('Session expired — please sign in again.');
         }
         const ct = res.headers.get('content-type') || '';
@@ -751,48 +752,53 @@
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.detail || 'Registration failed');
-            this.showAlert('Registration successful! Cryptographic keypair generated locally on this device. Public key registered with server.', 'success');
-            this.setAuthMode('login');
+            this.showAlert('Registration successful! Logging you in...', 'success');
+            await this.performLogin(email, password);
           } else {
-            const formData = new URLSearchParams();
-            formData.append('username', email);
-            formData.append('password', password);
-            const res = await fetch('/api/v1/auth/login', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-              body: formData,
-            });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.detail || 'Authentication failed');
-
-            this.token = data.access_token;
-            this.user = data.user;
-            localStorage.setItem('df_token', this.token);
-            localStorage.setItem('df_user', JSON.stringify(this.user));
-
-            // If recipient has no local private key yet, generate one client-side and register public key
-            if (this.user.role === 'RECIPIENT' && !localStorage.getItem('df_recipient_privkey')) {
-              const clientKeys = generateX25519KeyPairClient();
-              localStorage.setItem('df_recipient_privkey', clientKeys.privateKeyB64);
-              try {
-                await fetch('/api/v1/auth/register-public-key', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.token}` },
-                  body: JSON.stringify({ public_key: clientKeys.publicKeyB64 }),
-                });
-              } catch(e) {}
-            }
-
-            this.renderAuthenticatedUI();
-            this.switchTab('dashboard');
-            this.showAlert(`Welcome, ${this.user.full_name}!`, 'success');
+            await this.performLogin(email, password);
           }
         } catch (err) {
           this.showAlert(err.message, 'error');
         }
       },
 
-      logout() {
+      async performLogin(email, password) {
+        const formData = new URLSearchParams();
+        formData.append('username', email);
+        formData.append('password', password);
+        const res = await fetch('/api/v1/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: formData,
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Authentication failed');
+
+        this.token = data.access_token;
+        this.user = data.user;
+        localStorage.setItem('df_token', this.token);
+        localStorage.setItem('df_user', JSON.stringify(this.user));
+
+        // If recipient has no local private key yet, generate one client-side and register public key
+        if (this.user.role === 'RECIPIENT' && !localStorage.getItem('df_recipient_privkey')) {
+          const clientKeys = generateX25519KeyPairClient();
+          localStorage.setItem('df_recipient_privkey', clientKeys.privateKeyB64);
+          try {
+            await fetch('/api/v1/auth/register-public-key', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.token}` },
+              body: JSON.stringify({ public_key: clientKeys.publicKeyB64 }),
+            });
+          } catch(e) {}
+        }
+
+        this.renderAuthenticatedUI();
+        const isOwner = (this.user.role || '').toUpperCase() === 'OWNER';
+        this.switchTab(isOwner ? 'dashboard' : 'inbox');
+        this.showAlert(`Welcome, ${this.user.full_name}!`, 'success');
+      },
+
+      logout(reason) {
         this.token = null;
         this.user = null;
         localStorage.removeItem('df_token');
@@ -803,6 +809,7 @@
         const refreshBtn = document.getElementById('tab-refresh');
         if (refreshBtn) refreshBtn.classList.add('hidden');
         this.switchTab('auth');
+        if (reason) this.showAlert(reason, 'error');
       },
 
       renderAuthenticatedUI() {
@@ -835,21 +842,20 @@
           if (btn) btn.classList.toggle('hidden', !isOwner);
         });
 
+        const tabDash = document.getElementById('tab-dashboard');
+        if (tabDash) tabDash.classList.toggle('hidden', !isOwner);
+
         const tabInbox = document.getElementById('tab-inbox');
         if (tabInbox) tabInbox.classList.remove('hidden');
-
-        // Route default landing tab
-        if (!isOwner) {
-          const tabDash = document.getElementById('tab-dashboard');
-          if (tabDash) tabDash.classList.add('hidden');
-          this.switchTab('inbox');
-        } else {
-          const tabDash = document.getElementById('tab-dashboard');
-          if (tabDash) tabDash.classList.remove('hidden');
-        }
       },
 
       switchTab(tabId) {
+        const isOwner = this.user && (this.user.role || '').toUpperCase() === 'OWNER';
+        // Protect owner tabs from recipient access
+        if (this.user && !isOwner && ['dashboard', 'documents', 'recipients', 'distribution', 'investigation', 'audit'].includes(tabId)) {
+          tabId = 'inbox';
+        }
+
         const views = ['auth', 'dashboard', 'inbox', 'documents', 'recipients', 'distribution', 'recipientPortal', 'investigation', 'audit', 'settings'];
         views.forEach(v => {
           const el = document.getElementById(`view-${v}`);
@@ -863,6 +869,8 @@
         if (tabId === 'documents') this.loadDocuments();
         if (tabId === 'recipients') this.loadRecipients();
         if (tabId === 'distribution') this.loadDistributionData();
+        if (tabId === 'audit') this.loadAuditLogs();
+      },
         if (tabId === 'audit') this.loadAuditLogs();
       },
 
