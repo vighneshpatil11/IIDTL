@@ -606,6 +606,64 @@
 
   <!-- Single-Page Application Client Logic -->
   <script>
+    // RFC 7748 compliant pure JS Curve25519 / X25519 client-side key generator
+    function generateX25519KeyPairClient() {
+      const P = 2n ** 255n - 19n;
+      const A24 = 121665n;
+      function inv(x) {
+        let base = x % P, exp = P - 2n, res = 1n;
+        while (exp > 0n) {
+          if (exp & 1n) res = (res * base) % P;
+          base = (base * base) % P;
+          exp >>= 1n;
+        }
+        return res;
+      }
+      function x25519(kBytes, uBytes) {
+        const k = new Uint8Array(kBytes);
+        k[0] &= 248; k[31] &= 127; k[31] |= 64;
+        let kNum = 0n;
+        for (let i = 31; i >= 0; i--) kNum = (kNum << 8n) | BigInt(k[i]);
+        let uNum = 0n;
+        for (let i = 31; i >= 0; i--) uNum = (uNum << 8n) | BigInt(uBytes[i]);
+        uNum %= P;
+        let x1 = uNum, x2 = 1n, z2 = 0n, x3 = uNum, z3 = 1n, swap = 0n;
+        for (let t = 254; t >= 0; t--) {
+          const kt = (kNum >> BigInt(t)) & 1n;
+          swap ^= kt;
+          if (swap) { [x2, x3] = [x3, x2]; [z2, z3] = [z3, z2]; }
+          swap = kt;
+          const A = (x2 + z2) % P, AA = (A * A) % P;
+          const B = (x2 - z2 + P) % P, BB = (B * B) % P;
+          const E = (AA - BB + P) % P;
+          const C = (x3 + z3) % P, D = (x3 - z3 + P) % P;
+          const DA = (D * A) % P, CB = (C * B) % P;
+          x3 = ((DA + CB) * (DA + CB)) % P;
+          z3 = (x1 * (((DA - CB + P) % P) ** 2n % P)) % P;
+          x2 = (AA * BB) % P;
+          z2 = (E * ((AA + (A24 * E) % P) % P)) % P;
+        }
+        if (swap) { [x2, x3] = [x3, x2]; [z2, z3] = [z3, z2]; }
+        const resultNum = (x2 * inv(z2)) % P;
+        const resBytes = new Uint8Array(32);
+        let tmp = resultNum;
+        for (let i = 0; i < 32; i++) { resBytes[i] = Number(tmp & 0xffn); tmp >>= 8n; }
+        return resBytes;
+      }
+      const priv = new Uint8Array(32);
+      window.crypto.getRandomValues(priv);
+      priv[0] &= 248; priv[31] &= 127; priv[31] |= 64;
+      const basePoint = new Uint8Array(32);
+      basePoint[0] = 9;
+      const pub = x25519(priv, basePoint);
+      function b64(bytes) {
+        let bin = '';
+        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        return btoa(bin);
+      }
+      return { privateKeyB64: b64(priv), publicKeyB64: b64(pub) };
+    }
+
     const app = {
       token: localStorage.getItem('df_token') || null,
       user: JSON.parse(localStorage.getItem('df_user') || 'null'),
@@ -639,17 +697,20 @@
           if (this.authMode === 'register') {
             const fullName = document.getElementById('authName').value;
             const role = document.getElementById('authRole').value;
+            let clientPubKey = null;
+            if (role === 'RECIPIENT') {
+              const clientKeys = generateX25519KeyPairClient();
+              localStorage.setItem('df_recipient_privkey', clientKeys.privateKeyB64);
+              clientPubKey = clientKeys.publicKeyB64;
+            }
             const res = await fetch('/api/v1/auth/register', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ email, full_name: fullName, password, role }),
+              body: JSON.stringify({ email, full_name: fullName, password, role, public_key: clientPubKey }),
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.detail || 'Registration failed');
-            if (data.private_key) {
-              localStorage.setItem('df_recipient_privkey', data.private_key);
-            }
-            this.showAlert('Registration successful! Your recipient profile and cryptographic keys have been created. Please sign in.', 'success');
+            this.showAlert('Registration successful! Cryptographic keypair generated locally on this device. Public key registered with server.', 'success');
             this.setAuthMode('login');
           } else {
             const formData = new URLSearchParams();
@@ -667,8 +728,18 @@
             this.user = data.user;
             localStorage.setItem('df_token', this.token);
             localStorage.setItem('df_user', JSON.stringify(this.user));
-            if (this.user.private_key) {
-              localStorage.setItem('df_recipient_privkey', this.user.private_key);
+
+            // If recipient has no local private key yet, generate one client-side and register public key
+            if (this.user.role === 'RECIPIENT' && !localStorage.getItem('df_recipient_privkey')) {
+              const clientKeys = generateX25519KeyPairClient();
+              localStorage.setItem('df_recipient_privkey', clientKeys.privateKeyB64);
+              try {
+                await fetch('/api/v1/auth/register-public-key', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.token}` },
+                  body: JSON.stringify({ public_key: clientKeys.publicKeyB64 }),
+                });
+              } catch(e) {}
             }
 
             this.renderAuthenticatedUI();
@@ -698,10 +769,7 @@
         badge.classList.remove('hidden');
         document.getElementById('logoutBtn').classList.remove('hidden');
 
-        // Sync recipient private key to localStorage and form input
-        if (this.user && this.user.private_key) {
-          localStorage.setItem('df_recipient_privkey', this.user.private_key);
-        }
+        // Load private key from localStorage (server NEVER stores or returns private keys)
         const privInput = document.getElementById('clientPrivKeyInput');
         if (privInput && !privInput.value) {
           privInput.value = localStorage.getItem('df_recipient_privkey') || '';
@@ -1144,39 +1212,36 @@
 
       async copyMyPrivateKey() {
         let key = localStorage.getItem('df_recipient_privkey');
-        if (!key && this.token) {
-          try {
-            const res = await fetch('/api/v1/auth/my-keys', { headers: { 'Authorization': `Bearer ${this.token}` } });
-            const data = await res.json();
-            if (data.private_key) {
-              key = data.private_key;
-              localStorage.setItem('df_recipient_privkey', key);
-            }
-          } catch(e) {}
-        }
         if (key) {
           navigator.clipboard.writeText(key);
-          this.showAlert('Your X25519 Private Key copied to clipboard!', 'success');
+          this.showAlert('Your client X25519 Private Key copied to clipboard! (Stored locally, never shared with server)', 'success');
         } else {
-          this.showAlert('No private key found on your profile.', 'error');
+          this.showAlert('No private key found in this local browser session. Click "Generate Keys Locally" below.', 'error');
         }
       },
 
       async regenerateMyKeys() {
-        if (!confirm('Syncing will refresh your X25519 keypair and ensure your enrolled public key is up to date with the Document Owner. Continue?')) return;
+        if (!confirm('Generating a new cryptographic keypair locally will update your registered public key on the server. Your new private key will remain exclusively on this device. Continue?')) return;
         try {
-          const res = await fetch('/api/v1/auth/regenerate-my-keys', {
+          const clientKeys = generateX25519KeyPairClient();
+          localStorage.setItem('df_recipient_privkey', clientKeys.privateKeyB64);
+
+          const res = await fetch('/api/v1/auth/register-public-key', {
             method: 'POST',
-            headers: { 'Authorization': `Bearer ${this.token}` }
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${this.token}`,
+            },
+            body: JSON.stringify({ public_key: clientKeys.publicKeyB64 }),
           });
           const data = await res.json();
-          if (!res.ok) throw new Error('Key sync failed');
-          localStorage.setItem('df_recipient_privkey', data.private_key);
+          if (!res.ok) throw new Error(data.detail || 'Public key update failed');
+
           const inputEl = document.getElementById('clientPrivKeyInput');
-          if (inputEl) inputEl.value = data.private_key;
+          if (inputEl) inputEl.value = clientKeys.privateKeyB64;
           const badgeLoaded = document.getElementById('privKeyLoadedBadge');
           if (badgeLoaded) badgeLoaded.classList.remove('hidden');
-          this.showAlert('New cryptographic keypair generated and synced with your profile!', 'success');
+          this.showAlert('New cryptographic keypair generated locally! Public key registered with server.', 'success');
         } catch(err) {
           this.showAlert(err.message, 'error');
         }
@@ -1187,21 +1252,6 @@
         if (!item) return;
 
         let privKey = localStorage.getItem('df_recipient_privkey') || (document.getElementById('clientPrivKeyInput') ? document.getElementById('clientPrivKeyInput').value.trim() : '');
-
-        if (!privKey && this.token) {
-          try {
-            const kRes = await fetch('/api/v1/auth/my-keys', {
-              headers: { 'Authorization': `Bearer ${this.token}` }
-            });
-            if (kRes.ok) {
-              const kData = await kRes.json();
-              if (kData.private_key) {
-                privKey = kData.private_key;
-                localStorage.setItem('df_recipient_privkey', privKey);
-              }
-            }
-          } catch (e) {}
-        }
 
         if (!privKey) {
           privKey = prompt("Please enter your recipient X25519 private key (Base64) to decrypt this document:");
@@ -1220,7 +1270,9 @@
         try {
           let pkgText = item.package_json_str;
           if (!pkgText) {
-            const dlRes = await fetch(item.download_url);
+            const dlRes = await fetch(item.download_url, {
+              headers: { 'Authorization': `Bearer ${this.token}` }
+            });
             if (dlRes.ok) {
               pkgText = await dlRes.text();
             }
@@ -1372,31 +1424,23 @@
         }
       },
 
-      async generateRandomX25519KeyForForm() {
+      generateRandomX25519KeyForForm() {
         try {
-          const res = await fetch('/api/v1/recipients/generate-keypair', {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${this.token}` }
-          });
-          const data = await res.json();
-          document.getElementById('recPubKey').value = data.public_key;
-          prompt("Generated valid X25519 Key Pair! PLEASE SAVE THIS PRIVATE KEY TO GIVE TO THE RECIPIENT:", data.private_key);
+          const keys = generateX25519KeyPairClient();
+          document.getElementById('recPubKey').value = keys.publicKeyB64;
+          prompt("Generated client-side X25519 Key Pair! PLEASE SAVE THIS PRIVATE KEY TO GIVE TO THE RECIPIENT:", keys.privateKeyB64);
         } catch (err) {
           this.showAlert('Key generation failed: ' + err.message, 'error');
         }
       },
 
-      async generateTestingKeyPair() {
+      generateTestingKeyPair() {
         try {
-          const res = await fetch('/api/v1/recipients/generate-keypair', {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${this.token}` }
-          });
-          const data = await res.json();
-          document.getElementById('genPubKey').value = data.public_key;
-          document.getElementById('genPrivKey').value = data.private_key;
+          const keys = generateX25519KeyPairClient();
+          document.getElementById('genPubKey').value = keys.publicKeyB64;
+          document.getElementById('genPrivKey').value = keys.privateKeyB64;
           document.getElementById('keyPairDisplay').classList.remove('hidden');
-          this.showAlert('Generated genuine Curve25519 keypair!', 'success');
+          this.showAlert('Generated client-side Curve25519 keypair!', 'success');
         } catch (err) {
           this.showAlert('Key generation failed: ' + err.message, 'error');
         }

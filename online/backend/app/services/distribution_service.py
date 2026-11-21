@@ -68,14 +68,21 @@ class DistributionService:
 
             watermark_id = generate_watermark_id()
 
-            if is_pdf:
-                watermarked_bytes = WatermarkEngine.embed_watermark_in_pdf(original_bytes, watermark_id)
-            elif is_txt:
-                text_content = original_bytes.decode("utf-8", errors="replace")
-                wm_text = WatermarkEngine.embed_watermark_in_text(text_content, watermark_id)
-                watermarked_bytes = wm_text.encode("utf-8")
-            else:
-                watermarked_bytes = original_bytes
+            try:
+                if is_pdf:
+                    watermarked_bytes = WatermarkEngine.embed_and_verify_pdf(original_bytes, watermark_id)
+                elif is_txt:
+                    text_content = original_bytes.decode("utf-8", errors="replace")
+                    wm_text = WatermarkEngine.embed_and_verify_text(text_content, watermark_id)
+                    watermarked_bytes = wm_text.encode("utf-8")
+                else:
+                    watermarked_bytes = original_bytes
+            except Exception as e:
+                db.rollback()
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Watermarking and verification failed for recipient {recipient.id}: {str(e)}",
+                )
 
             dek = generate_dek()
             rec_pub = x25519_public_from_bytes(b64decode_str(recipient.public_key))
@@ -187,8 +194,8 @@ class DistributionService:
         is_pdf = doc.original_filename.lower().endswith(".pdf")
         is_txt = doc.original_filename.lower().endswith(".txt")
 
-        # Owner signing key pair for package authenticity
-        owner_sign_priv, owner_sign_pub = generate_ed25519_keypair()
+        # Persistent owner signing key pair for package authenticity
+        owner_sign_priv, owner_sign_pub = settings.get_owner_signing_keypair()
 
         package_id = f"PKG-UNIFIED-{doc.id.replace('DOC-', '')}"
         recipient_slots = []
@@ -203,14 +210,21 @@ class DistributionService:
 
             watermark_id = generate_watermark_id()
 
-            if is_pdf:
-                watermarked_bytes = WatermarkEngine.embed_watermark_in_pdf(original_bytes, watermark_id)
-            elif is_txt:
-                text_content = original_bytes.decode("utf-8", errors="replace")
-                wm_text = WatermarkEngine.embed_watermark_in_text(text_content, watermark_id)
-                watermarked_bytes = wm_text.encode("utf-8")
-            else:
-                watermarked_bytes = original_bytes
+            try:
+                if is_pdf:
+                    watermarked_bytes = WatermarkEngine.embed_and_verify_pdf(original_bytes, watermark_id)
+                elif is_txt:
+                    text_content = original_bytes.decode("utf-8", errors="replace")
+                    wm_text = WatermarkEngine.embed_and_verify_text(text_content, watermark_id)
+                    watermarked_bytes = wm_text.encode("utf-8")
+                else:
+                    watermarked_bytes = original_bytes
+            except Exception as e:
+                db.rollback()
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Watermarking and verification failed for recipient {recipient.id}: {str(e)}",
+                )
 
             dek = generate_dek()
             rec_pub = x25519_public_from_bytes(b64decode_str(recipient.public_key))

@@ -138,7 +138,7 @@ def test_online_complete_lifecycle(db_session):
     assert alice_dist["watermark_id"] != bob_dist["watermark_id"]
 
     # 6. Download Alice's Encrypted Package (.enc)
-    file_resp = download_recipient_package(distribution_id=alice_dist["distribution_id"], db=db_session)
+    file_resp = download_recipient_package(distribution_id=alice_dist["distribution_id"], db=db_session, current_user=owner_user)
     # Read the downloaded package from the file response path
     with open(file_resp.path, "rb") as f:
         alice_pkg_bytes = f.read()
@@ -236,7 +236,12 @@ def test_recipient_auto_keys_shared_docs_and_decryption(db_session):
         CreateDistributionRequest,
         DecryptPackageRequest,
     )
-    from shared.utils.serialization import b64decode_str
+    from shared.utils.serialization import b64decode_str, b64encode_str
+    from shared.crypto.key_exchange import (
+        generate_x25519_keypair,
+        x25519_public_to_bytes,
+        x25519_private_to_bytes,
+    )
 
     suffix = secrets.token_hex(4)
 
@@ -251,26 +256,33 @@ def test_recipient_auto_keys_shared_docs_and_decryption(db_session):
         db=db_session,
     )
 
-    # 2. Register Recipient (without providing public key)
+    # 2. Recipient generates keypair LOCALLY on client device
+    rec_priv, rec_pub = generate_x25519_keypair()
+    rec_pub_b64 = b64encode_str(x25519_public_to_bytes(rec_pub))
+    rec_priv_b64 = b64encode_str(x25519_private_to_bytes(rec_priv))
+
+    # Recipient registers account providing only public key
     recipient = register_user(
         req=RegisterRequest(
             email=f"rec_{suffix}@test.com",
             full_name="Recipient User",
             password="Password123!",
             role="RECIPIENT",
+            public_key=rec_pub_b64,
         ),
         db=db_session,
     )
 
-    # Verify auto-generated keys
-    assert recipient.public_key is not None
-    assert recipient.private_key is not None
+    # Verify public key is stored and private key is NEVER stored on server
+    assert recipient.public_key == rec_pub_b64
+    assert not hasattr(recipient, "private_key") or getattr(recipient, "private_key", None) is None
 
-    # Verify auto-enrollment in Recipient table
+    # Verify auto-enrollment in Recipient table with client-submitted public key
     owner_recipients = list_recipients(db=db_session, current_user=owner)
     matching_rec = next((r for r in owner_recipients if r["email"] == recipient.email), None)
     assert matching_rec is not None
-    assert matching_rec["public_key"] == recipient.public_key
+    assert matching_rec["public_key"] == rec_pub_b64
+    assert "private_key" not in matching_rec or matching_rec.get("private_key") is None
 
     # 3. Owner uploads document
     pdf_bytes = make_test_pdf_bytes("Top Secret Strategy Doc")
@@ -313,11 +325,11 @@ def test_recipient_auto_keys_shared_docs_and_decryption(db_session):
     assert enc_pkg["package_json_str"] is not None
     assert uni_pkg["package_json_str"] is not None
 
-    # 7. Recipient decrypts individual package (.enc) with their auto-generated private key
+    # 7. Recipient decrypts individual package (.enc) with their local private key
     dec_res_enc = decrypt_package_api(
         req=DecryptPackageRequest(
             package_content=enc_pkg["package_json_str"],
-            private_key=recipient.private_key,
+            private_key=rec_priv_b64,
         ),
         db=db_session,
     )
@@ -325,11 +337,11 @@ def test_recipient_auto_keys_shared_docs_and_decryption(db_session):
     decrypted_bytes_enc = b64decode_str(dec_res_enc["file_bytes_b64"])
     assert decrypted_bytes_enc.startswith(b"%PDF")
 
-    # 8. Recipient decrypts unified package (.secure) with their auto-generated private key
+    # 8. Recipient decrypts unified package (.secure) with their local private key
     dec_res_uni = decrypt_package_api(
         req=DecryptPackageRequest(
             package_content=uni_pkg["package_json_str"],
-            private_key=recipient.private_key,
+            private_key=rec_priv_b64,
         ),
         db=db_session,
     )

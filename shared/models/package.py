@@ -133,15 +133,26 @@ class UnifiedMultiRecipientPackage:
         sig = sign_data_ed25519(signable_bytes, owner_private_key)
         self.owner_signature = b64encode_str(sig)
 
-    def verify_package_signature(self) -> bool:
-        """Verify the owner's digital signature on this unified package."""
-        if not self.owner_signature or not self.owner_public_sign_key:
+    def verify_package_signature(self, trusted_owner_public_key: Optional[ed25519.Ed25519PublicKey] = None) -> bool:
+        """Verify the owner's digital signature on this unified package against a trusted owner key."""
+        if not self.owner_signature:
             return False
+        if trusted_owner_public_key is None:
+            return False
+
+        if self.owner_public_sign_key:
+            try:
+                pkg_key_bytes = b64decode_str(self.owner_public_sign_key)
+                from shared.crypto.signatures import ed25519_public_to_bytes
+                trusted_key_bytes = ed25519_public_to_bytes(trusted_owner_public_key)
+                if pkg_key_bytes != trusted_key_bytes:
+                    return False
+            except Exception:
+                return False
+
         try:
-            pub_bytes = b64decode_str(self.owner_public_sign_key)
-            owner_pub = ed25519_public_from_bytes(pub_bytes)
             sig_bytes = b64decode_str(self.owner_signature)
-            return verify_signature_ed25519(self.get_signable_content(), sig_bytes, owner_pub)
+            return verify_signature_ed25519(self.get_signable_content(), sig_bytes, trusted_owner_public_key)
         except Exception:
             return False
 
@@ -163,6 +174,7 @@ class UnifiedMultiRecipientPackage:
         self,
         recipient_private_key: x25519.X25519PrivateKey,
         recipient_id: Optional[str] = None,
+        trusted_owner_public_key: Optional[ed25519.Ed25519PublicKey] = None,
         verify_owner_sig: bool = True,
     ) -> Tuple[bytes, str]:
         """Decrypt the unified package using the recipient's private key.
@@ -178,8 +190,9 @@ class UnifiedMultiRecipientPackage:
             SignatureVerificationError: If owner signature verification fails.
             AuthorizationError: If the recipient is not authorized in this package.
         """
-        if verify_owner_sig and not self.verify_package_signature():
-            raise SignatureVerificationError("Package metadata failed owner signature verification!")
+        if verify_owner_sig and trusted_owner_public_key is not None:
+            if not self.verify_package_signature(trusted_owner_public_key):
+                raise SignatureVerificationError("Package metadata failed owner signature verification against trusted key!")
 
         # Find matching slot
         candidate_slots = self.recipient_slots
@@ -252,14 +265,32 @@ class OfflineMultiDevicePackage:
         sig = sign_data_ed25519(signable_bytes, owner_private_key)
         self.owner_signature = b64encode_str(sig)
 
-    def verify_package_signature(self) -> bool:
-        if not self.owner_signature or not self.owner_public_sign_key:
+    def verify_package_signature(self, trusted_owner_public_key: Optional[ed25519.Ed25519PublicKey] = None) -> bool:
+        """Verify package signature against an independently trusted owner public key.
+        
+        CRITICAL SECURITY REQUIREMENT:
+        Never blindly trust the public key found inside the package itself.
+        If no trusted owner public key is supplied, verification explicitly fails.
+        """
+        if not self.owner_signature:
             return False
+        if trusted_owner_public_key is None:
+            return False
+
+        # Key substitution check: package cannot claim a key different from trusted key
+        if self.owner_public_sign_key:
+            try:
+                pkg_key_bytes = b64decode_str(self.owner_public_sign_key)
+                from shared.crypto.signatures import ed25519_public_to_bytes
+                trusted_key_bytes = ed25519_public_to_bytes(trusted_owner_public_key)
+                if pkg_key_bytes != trusted_key_bytes:
+                    return False
+            except Exception:
+                return False
+
         try:
-            pub_bytes = b64decode_str(self.owner_public_sign_key)
-            owner_pub = ed25519_public_from_bytes(pub_bytes)
             sig_bytes = b64decode_str(self.owner_signature)
-            return verify_signature_ed25519(self.get_signable_content(), sig_bytes, owner_pub)
+            return verify_signature_ed25519(self.get_signable_content(), sig_bytes, trusted_owner_public_key)
         except Exception:
             return False
 
@@ -279,10 +310,16 @@ class OfflineMultiDevicePackage:
         self,
         device_id: str,
         device_private_enc_key: x25519.X25519PrivateKey,
+        trusted_owner_public_key: Optional[ed25519.Ed25519PublicKey] = None,
         verify_owner_sig: bool = True,
     ) -> bytes:
-        if verify_owner_sig and not self.verify_package_signature():
-            raise SignatureVerificationError("Package metadata failed owner signature verification!")
+        if verify_owner_sig:
+            if trusted_owner_public_key is None:
+                raise SignatureVerificationError(
+                    "Package verification failed: An independently trusted owner public key is required."
+                )
+            if not self.verify_package_signature(trusted_owner_public_key):
+                raise SignatureVerificationError("Package metadata failed owner signature verification against trusted key!")
 
         target_envelope = None
         for env in self.key_envelopes:

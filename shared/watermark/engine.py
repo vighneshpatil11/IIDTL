@@ -7,6 +7,11 @@ from reportlab.pdfgen import canvas
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import NameObject, ArrayObject
 
+from shared.crypto.exceptions import (
+    WatermarkingError,
+    WatermarkEmbeddingError,
+    WatermarkVerificationError,
+)
 from .zero_width import (
     encode_watermark_zero_width,
     extract_watermark_zero_width,
@@ -14,11 +19,13 @@ from .zero_width import (
 
 
 class WatermarkEngine:
-    """Unified engine for invisible forensic watermark embedding and extraction."""
+    """Unified engine for invisible forensic watermark embedding and extraction with mandatory verification."""
 
     @staticmethod
     def embed_watermark_in_text(text: str, watermark_id: str) -> str:
         """Embed watermark in plain text by inserting zero-width marker at word boundaries."""
+        if not text:
+            raise WatermarkEmbeddingError("Cannot embed watermark in empty text document.")
         zw_payload = encode_watermark_zero_width(watermark_id)
         # Insert after the first word or space
         space_idx = text.find(" ")
@@ -29,11 +36,27 @@ class WatermarkEngine:
     @staticmethod
     def extract_watermark_from_text(text: str) -> Tuple[Optional[str], float, Dict[str, Any]]:
         """Extract watermark from plain text."""
+        if not text:
+            return None, 0.0, {
+                "method": "zero_width_text",
+                "status": "CORRUPT_UNSUPPORTED",
+                "classification": "CORRUPT_UNSUPPORTED",
+                "confidence": 0.0,
+            }
         wm_id, conf = extract_watermark_zero_width(text)
+        
+        if wm_id and conf >= 0.95:
+            classification = "EXACT_MATCH"
+        elif wm_id and conf >= 0.7:
+            classification = "PARTIAL_MATCH"
+        else:
+            classification = "NO_MATCH"
+
         telemetry = {
             "method": "zero_width_text",
             "found": wm_id is not None,
             "confidence": conf,
+            "classification": classification,
         }
         return wm_id, conf, telemetry
 
@@ -45,13 +68,18 @@ class WatermarkEngine:
         1. Clean ReportLab vector overlay with invisible micro-forensic text.
         2. Merged content stream with standard ISO-compliant indirect objects.
         3. Structural document catalog metadata containing the forensic payload.
+
+        Raises WatermarkEmbeddingError if the PDF is empty, invalid, or cannot be watermarked.
         """
+        if not pdf_bytes:
+            raise WatermarkEmbeddingError("PDF bytes are empty.")
+
         try:
             reader = PdfReader(io.BytesIO(pdf_bytes))
             if len(reader.pages) == 0:
-                return pdf_bytes
-        except Exception:
-            return pdf_bytes
+                raise WatermarkEmbeddingError("PDF contains 0 pages; cannot embed watermark.")
+        except Exception as e:
+            raise WatermarkEmbeddingError(f"Invalid or corrupted PDF structure: {e}")
 
         zw_marker = encode_watermark_zero_width(watermark_id)
 
@@ -83,9 +111,8 @@ class WatermarkEngine:
             out_stream = io.BytesIO()
             writer.write(out_stream)
             return out_stream.getvalue()
-        except Exception:
-            # Fallback to original bytes if PDF structure prevents modification
-            return pdf_bytes
+        except Exception as e:
+            raise WatermarkEmbeddingError(f"Failed to embed forensic watermark in PDF: {e}")
 
     @classmethod
     def extract_watermark_from_pdf(cls, pdf_bytes: bytes) -> Tuple[Optional[str], float, Dict[str, Any]]:
@@ -99,13 +126,31 @@ class WatermarkEngine:
         Returns:
             (watermark_id, confidence_score, telemetry)
         """
+        if not pdf_bytes:
+            return None, 0.0, {
+                "layers_checked": [],
+                "hits": [],
+                "status": "EMPTY_OR_MISSING_DOCUMENT",
+                "classification": "CORRUPT_UNSUPPORTED",
+                "error": "Document bytes are empty",
+            }
+
         try:
             reader = PdfReader(io.BytesIO(pdf_bytes))
+            if len(reader.pages) == 0:
+                return None, 0.0, {
+                    "layers_checked": [],
+                    "hits": [],
+                    "status": "ZERO_PAGE_DOCUMENT",
+                    "classification": "CORRUPT_UNSUPPORTED",
+                    "error": "PDF has zero pages",
+                }
         except Exception as e:
             return None, 0.0, {
                 "layers_checked": [],
                 "hits": [],
                 "status": "INVALID_OR_CORRUPT_PDF",
+                "classification": "CORRUPT_UNSUPPORTED",
                 "error": str(e),
             }
 
@@ -172,17 +217,58 @@ class WatermarkEngine:
                 "layers_checked": ["extracted_text", "document_metadata", "raw_content_streams"],
                 "hits": [],
                 "status": "NO_WATERMARK_DETECTED",
+                "classification": "NO_MATCH",
             }
 
         # Select highest confidence candidate
         best_wm_id = max(candidates, key=candidates.get)
         confidence = candidates[best_wm_id]
 
+        if confidence >= 0.95:
+            classification = "EXACT_MATCH"
+        elif confidence >= 0.70:
+            classification = "PARTIAL_MATCH"
+        else:
+            classification = "NO_MATCH"
+
         telemetry = {
             "layers_checked": ["extracted_text", "document_metadata", "raw_content_streams"],
             "hits": layer_hits,
             "status": "MATCH_CONFIRMED" if confidence >= 0.8 else "SUSPICIOUS_WEAK_MATCH",
+            "classification": classification,
             "candidate_count": len(candidates),
         }
 
         return best_wm_id, confidence, telemetry
+
+    @classmethod
+    def embed_and_verify_pdf(cls, pdf_bytes: bytes, watermark_id: str) -> bytes:
+        """Embed watermark and immediately verify that extraction returns the expected watermark ID.
+        
+        Raises:
+            WatermarkEmbeddingError: If embedding fails.
+            WatermarkVerificationError: If extraction fails or yields a mismatched watermark ID.
+        """
+        watermarked = cls.embed_watermark_in_pdf(pdf_bytes, watermark_id)
+        extracted_id, conf, telemetry = cls.extract_watermark_from_pdf(watermarked)
+        if not extracted_id or extracted_id != watermark_id or conf < 0.8:
+            raise WatermarkVerificationError(
+                f"Watermark verification failed! Expected '{watermark_id}', extracted '{extracted_id}' (conf={conf:.2f})"
+            )
+        return watermarked
+
+    @classmethod
+    def embed_and_verify_text(cls, text: str, watermark_id: str) -> str:
+        """Embed watermark in text and immediately verify that extraction returns the expected watermark ID.
+        
+        Raises:
+            WatermarkEmbeddingError: If embedding fails.
+            WatermarkVerificationError: If extraction fails or yields a mismatched watermark ID.
+        """
+        watermarked = cls.embed_watermark_in_text(text, watermark_id)
+        extracted_id, conf, telemetry = cls.extract_watermark_from_text(watermarked)
+        if not extracted_id or extracted_id != watermark_id or conf < 0.8:
+            raise WatermarkVerificationError(
+                f"Watermark verification failed in text! Expected '{watermark_id}', extracted '{extracted_id}' (conf={conf:.2f})"
+            )
+        return watermarked

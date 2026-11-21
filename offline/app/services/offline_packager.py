@@ -23,7 +23,7 @@ from shared.models.package import (
 from shared.utils.identifiers import generate_document_id
 from shared.utils.serialization import b64encode_str, b64decode_str
 from shared.crypto.exceptions import AuthorizationError, IntegrityError
-from offline.app.database.models import OfflineDevice, OfflineDocument
+from offline.app.database.models import OfflineDevice, OfflineDocument, OfflineOwner
 from offline.app.services.audit_service import HashLinkedAuditService
 
 
@@ -80,6 +80,17 @@ class OfflinePackagingService:
         owner_sign_pub = owner_sign_priv.public_key()
         owner_pub_bytes = ed25519_public_to_bytes(owner_sign_pub)
 
+        # Register owner identity as trusted in the offline store if not present
+        existing_owner = db.query(OfflineOwner).filter(OfflineOwner.owner_id == owner_id).first()
+        if not existing_owner:
+            owner_rec = OfflineOwner(
+                owner_id=owner_id,
+                public_sign_key=b64encode_str(owner_pub_bytes),
+                public_enc_key=b64encode_str(b"\x00" * 32),
+            )
+            db.add(owner_rec)
+            db.commit()
+
         # 3. Create and sign package container
         pkg = OfflineMultiDevicePackage(
             package_id=pkg_id,
@@ -107,6 +118,7 @@ class OfflinePackagingService:
             event_type="PACKAGE_CREATED",
             result="SUCCESS",
             document_id=doc_id,
+            device_sign_priv=owner_sign_priv,
         )
 
         return pkg, out_path
@@ -118,12 +130,26 @@ class OfflinePackagingService:
         device_id: str,
         device_enc_priv: x25519.X25519PrivateKey,
         device_sign_priv: Optional[ed25519.Ed25519PrivateKey] = None,
+        trusted_owner_public_key: Optional[ed25519.Ed25519PublicKey] = None,
     ) -> bytes:
         """Decrypt offline (.secure), online (.enc), or unified (.secure) package for the calling device/recipient."""
         import json
+        from offline.app.database.models import OfflineOwner
+        from shared.crypto.signatures import ed25519_public_from_bytes
+
         payload = json.loads(package_bytes.decode("utf-8"))
         magic = payload.get("magic")
         doc_id = payload.get("document_id", "UNKNOWN_DOC")
+
+        # Resolve trusted owner public key from local device database if not passed explicitly
+        if trusted_owner_public_key is None:
+            owner_rec = db.query(OfflineOwner).first()
+            if owner_rec and owner_rec.public_sign_key:
+                try:
+                    pub_bytes = b64decode_str(owner_rec.public_sign_key)
+                    trusted_owner_public_key = ed25519_public_from_bytes(pub_bytes)
+                except Exception:
+                    pass
 
         # Check local device revocation registry
         device = db.query(OfflineDevice).filter(OfflineDevice.device_id == device_id).first()
@@ -144,6 +170,7 @@ class OfflinePackagingService:
                 plaintext = pkg.decrypt_for_device(
                     device_id=device_id,
                     device_private_enc_key=device_enc_priv,
+                    trusted_owner_public_key=trusted_owner_public_key,
                     verify_owner_sig=True,
                 )
             elif magic == "SECURE_DOC_RECIPIENT_V1":
@@ -154,6 +181,8 @@ class OfflinePackagingService:
                 plaintext, _ = pkg_unified.decrypt_for_recipient(
                     recipient_private_key=device_enc_priv,
                     recipient_id=device_id,
+                    trusted_owner_public_key=trusted_owner_public_key,
+                    verify_owner_sig=True,
                 )
             else:
                 raise ValueError(f"Unrecognized package magic: {magic}")

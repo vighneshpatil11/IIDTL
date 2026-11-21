@@ -87,31 +87,76 @@ def create_unified_distribution(
 @router.get("/download-unified/{filename}")
 def download_unified_package(
     filename: str,
-    db: Optional[Session] = Depends(get_db),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """Download the single unified multi-recipient package (.secure)."""
+    """Download the single unified multi-recipient package (.secure) with strict authorization checks."""
+    import json
     path = settings.ENCRYPTED_DIR / filename
+    raw_content = None
+
+    if path.is_file():
+        try:
+            raw_content = path.read_text(encoding="utf-8")
+        except Exception:
+            pass
+
+    if not raw_content:
+        record = db.query(UnifiedPackageRecord).filter(UnifiedPackageRecord.filename == filename).first()
+        if record and record.package_content_b64:
+            try:
+                raw_content = b64decode_str(record.package_content_b64).decode("utf-8")
+            except Exception:
+                pass
+
+    if not raw_content:
+        raise HTTPException(status_code=404, detail="Unified package file not found")
+
+    # Authorize caller
+    try:
+        pkg_data = json.loads(raw_content)
+        owner_id = pkg_data.get("owner_id")
+        doc_id = pkg_data.get("document_id")
+        slots = pkg_data.get("recipient_slots", [])
+    except Exception:
+        raise HTTPException(status_code=500, detail="Corrupted unified package metadata")
+
+    # Check caller permission
+    is_authorized = False
+    clean_email = current_user.email.strip().lower()
+
+    doc = db.query(Document).filter(Document.id == doc_id).first()
+    if (doc and doc.owner_id == current_user.id) or current_user.id == owner_id or current_user.role == "OWNER":
+        is_authorized = True
+    else:
+        # Check if caller matches an authorized recipient slot
+        user_recs = db.query(Recipient).filter(Recipient.email.ilike(clean_email)).all()
+        user_rec_ids = {r.id for r in user_recs}
+        for s in slots:
+            slot_rec_id = s.get("recipient_id")
+            slot_email = s.get("recipient_email", "").strip().lower()
+            if slot_rec_id in user_rec_ids or slot_email == clean_email:
+                # Check revocation status
+                matching_rec = db.query(Recipient).filter(Recipient.id == slot_rec_id).first()
+                if matching_rec and matching_rec.status == "REVOKED":
+                    raise HTTPException(status_code=403, detail="Recipient access has been revoked")
+                is_authorized = True
+                break
+
+    if not is_authorized:
+        raise HTTPException(status_code=403, detail="Access denied: You are not authorized to download this unified package.")
+
     if path.is_file():
         return FileResponse(
             path=path,
             media_type="application/octet-stream",
             filename=filename,
         )
-
-    # Fallback to database record if running in serverless ephemeral storage
-    if db is not None and not isinstance(db, type(Depends)):
-        try:
-            record = db.query(UnifiedPackageRecord).filter(UnifiedPackageRecord.filename == filename).first()
-            if record and record.package_content_b64:
-                return Response(
-                    content=b64decode_str(record.package_content_b64),
-                    media_type="application/octet-stream",
-                    headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-                )
-        except Exception:
-            pass
-
-    raise HTTPException(status_code=404, detail="Unified package file not found")
+    return Response(
+        content=raw_content.encode("utf-8"),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/my-shared-documents")
@@ -122,34 +167,20 @@ def get_my_shared_documents(
     """List all documents and packages distributed to the logged-in user."""
     import json
     from shared.utils.identifiers import generate_recipient_id
-    from shared.crypto.key_exchange import (
-        generate_x25519_keypair,
-        x25519_public_to_bytes,
-        x25519_private_to_bytes,
-    )
 
     clean_email = current_user.email.strip().lower()
 
     # Ensure this user is enrolled as a recipient with valid keys
     recs = db.query(Recipient).filter(Recipient.email.ilike(clean_email)).all()
-    if not recs:
-        # Auto-create recipient profile for this user
+    if not recs and current_user.public_key:
         owner = db.query(User).filter(User.role == "OWNER").first()
         owner_id = owner.id if owner else current_user.id
-        if not current_user.public_key or not getattr(current_user, "private_key", None):
-            priv_obj, pub_obj = generate_x25519_keypair()
-            current_user.public_key = b64encode_str(x25519_public_to_bytes(pub_obj))
-            current_user.private_key = b64encode_str(x25519_private_to_bytes(priv_obj))
-            db.commit()
-            db.refresh(current_user)
-
         new_rec = Recipient(
             id=generate_recipient_id(),
             owner_id=owner_id,
             name=current_user.full_name,
             email=clean_email,
             public_key=current_user.public_key,
-            private_key=getattr(current_user, "private_key", None),
             status="ACTIVE",
         )
         db.add(new_rec)
@@ -289,8 +320,9 @@ def get_document_distributions(
 def download_recipient_package(
     distribution_id: str,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """Download individual recipient package (.enc)."""
+    """Download individual recipient package (.enc) with strict authentication and IDOR protection."""
     dist = db.query(Distribution).filter(Distribution.id == distribution_id).first()
     if not dist:
         raise HTTPException(status_code=404, detail="Distribution package not found")
@@ -305,6 +337,35 @@ def download_recipient_package(
             result="DENIED_REVOKED",
         )
         raise HTTPException(status_code=403, detail="Recipient authorization has been revoked")
+
+    if current_user is None or not hasattr(current_user, "email"):
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    clean_user_email = current_user.email.strip().lower()
+    rec_email = rec.email.strip().lower() if rec else ""
+
+    # IDOR and role verification: Caller must be the document owner OR the designated recipient
+    is_authorized = False
+    if current_user.role == "OWNER":
+        if dist.document and dist.document.owner_id == current_user.id:
+            is_authorized = True
+    elif current_user.role == "RECIPIENT":
+        if rec and (rec_email == clean_user_email or rec.id == current_user.id):
+            is_authorized = True
+
+    if not is_authorized:
+        AuditService.log_event(
+            db=db,
+            document_id=dist.document_id,
+            recipient_id=dist.recipient_id,
+            event_type="UNAUTHORIZED_DOWNLOAD_ATTEMPT",
+            result="DENIED_IDOR",
+            user_agent=f"Blocked unauthorized user: {current_user.email}",
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: You are not authorized to download this distribution package.",
+        )
 
     path = Path(dist.encrypted_file_path)
     if not path.is_file():
@@ -392,8 +453,18 @@ def decrypt_package_api(
             )
         elif magic == "UNIFIED_SECURE_DOC_V1":
             pkg_u = UnifiedMultiRecipientPackage.deserialize(req.package_content.encode("utf-8"))
-            doc_bytes, wm = pkg_u.decrypt_for_recipient(priv_key, recipient_id=req.device_or_recipient_id)
+            _, owner_sign_pub = settings.get_owner_signing_keypair()
+            doc_bytes, wm = pkg_u.decrypt_for_recipient(
+                priv_key,
+                recipient_id=req.device_or_recipient_id,
+                trusted_owner_public_key=owner_sign_pub,
+                verify_owner_sig=True,
+            )
             watermark_id = wm
+            for slot in pkg_u.recipient_slots:
+                if slot.get("watermark_id") == wm:
+                    recipient_id = slot.get("recipient_id")
+                    break
 
             AuditService.log_event(
                 db=db,

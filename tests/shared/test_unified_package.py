@@ -117,11 +117,11 @@ class TestUnifiedMultiRecipientPackage:
             recipient_slots=[],
         )
         pkg.sign_package(owner_sign_priv)
-        assert pkg.verify_package_signature() is True
+        assert pkg.verify_package_signature(trusted_owner_public_key=owner_sign_pub) is True
 
         # Attacker tampers with filename
         pkg.original_filename = "tampered_filename.pdf"
-        assert pkg.verify_package_signature() is False
+        assert pkg.verify_package_signature(trusted_owner_public_key=owner_sign_pub) is False
 
     def test_online_unified_api_workflow(self):
         """Test creating ONE unified file via API, downloading it, and tracing leaks."""
@@ -173,7 +173,7 @@ class TestUnifiedMultiRecipientPackage:
         assert filename.endswith("_ALL_RECIPIENTS.secure")
 
         # Download the single file
-        file_resp = download_unified_package(filename)
+        file_resp = download_unified_package(filename, db=db, current_user=owner)
         with open(file_resp.path, "rb") as f:
             downloaded_bytes = f.read()
 

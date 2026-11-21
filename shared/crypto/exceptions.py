@@ -29,3 +29,18 @@ class SignatureVerificationError(CryptoError):
 class AuthorizationError(CryptoError):
     """Raised when device or recipient is not authorized."""
     pass
+
+
+class WatermarkingError(CryptoError):
+    """Base exception for watermarking failures."""
+    pass
+
+
+class WatermarkEmbeddingError(WatermarkingError):
+    """Raised when embedding a forensic watermark in a document fails."""
+    pass
+
+
+class WatermarkVerificationError(WatermarkingError):
+    """Raised when embedded forensic watermark cannot be verified immediately after embedding."""
+    pass

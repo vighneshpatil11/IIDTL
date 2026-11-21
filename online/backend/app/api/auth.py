@@ -1,5 +1,7 @@
 """Authentication API endpoints."""
 
+import os
+import sys
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, ConfigDict
@@ -7,12 +9,8 @@ from sqlalchemy.orm import Session
 from typing import Optional
 
 from shared.utils.identifiers import generate_recipient_id
-from shared.utils.serialization import b64encode_str
-from shared.crypto.key_exchange import (
-    generate_x25519_keypair,
-    x25519_public_to_bytes,
-    x25519_private_to_bytes,
-)
+from shared.utils.serialization import b64decode_str
+from shared.crypto.key_exchange import x25519_public_from_bytes
 from online.backend.app.database.connection import get_db
 from online.backend.app.database.models import User, Recipient
 from online.backend.app.security.passwords import hash_password, verify_password
@@ -26,7 +24,7 @@ class RegisterRequest(BaseModel):
     full_name: str
     password: str
     role: str = "RECIPIENT"
-    public_key: Optional[str] = None
+    public_key: Optional[str] = None  # Client-generated X25519 public key
     admin_token: Optional[str] = None
 
 
@@ -38,7 +36,6 @@ class UserResponse(BaseModel):
     full_name: str
     role: str
     public_key: Optional[str] = None
-    private_key: Optional[str] = None
 
 
 class TokenResponse(BaseModel):
@@ -47,28 +44,30 @@ class TokenResponse(BaseModel):
     user: UserResponse
 
 
-class KeyPairResponse(BaseModel):
+class PublicKeyResponse(BaseModel):
+    public_key: Optional[str] = None
+
+
+class UpdatePublicKeyRequest(BaseModel):
     public_key: str
-    private_key: str
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 def register_user(req: RegisterRequest, db: Session = Depends(get_db)):
-    """Register a new user account."""
+    """Register a new user account with client-managed keys."""
     req_role = req.role.upper()
     if req_role == "OWNER":
-        import os
-        import sys
-        admin_key = os.getenv("OWNER_REGISTRATION_TOKEN", "DocFortressOwnerSetup2026")
+        admin_key = os.getenv("OWNER_REGISTRATION_TOKEN")
         is_test_or_allowed = (
             os.getenv("ALLOW_OWNER_REGISTRATION", "false").lower() in ("true", "1")
             or "pytest" in sys.modules
         )
-        if not is_test_or_allowed and req.admin_token != admin_key:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Owner registration is locked. The Master Document Owner account is predefined by system administration.",
-            )
+        if not is_test_or_allowed:
+            if not admin_key or req.admin_token != admin_key:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Owner registration is locked. System administrator token is required.",
+                )
 
     clean_email = req.email.strip().lower()
     existing = db.query(User).filter(User.email.ilike(clean_email)).first()
@@ -76,13 +75,18 @@ def register_user(req: RegisterRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Email already registered")
 
     pub_key_b64 = req.public_key
-    priv_key_b64 = None
-
-    # For Recipients, auto-generate a genuine X25519 keypair if not supplied
-    if req_role == "RECIPIENT" and not pub_key_b64:
-        priv_obj, pub_obj = generate_x25519_keypair()
-        pub_key_b64 = b64encode_str(x25519_public_to_bytes(pub_obj))
-        priv_key_b64 = b64encode_str(x25519_private_to_bytes(priv_obj))
+    if pub_key_b64:
+        # Validate format (must be valid 32-byte X25519 public key)
+        try:
+            pub_bytes = b64decode_str(pub_key_b64)
+            if len(pub_bytes) != 32:
+                raise ValueError("Must be 32 bytes")
+            x25519_public_from_bytes(pub_bytes)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid client public key: {str(e)}"
+            )
 
     user_id = f"USR-{generate_recipient_id().replace('REC-', '')}"
     user = User(
@@ -92,14 +96,13 @@ def register_user(req: RegisterRequest, db: Session = Depends(get_db)):
         password_hash=hash_password(req.password),
         role=req_role,
         public_key=pub_key_b64,
-        private_key=priv_key_b64,
     )
     db.add(user)
     db.commit()
     db.refresh(user)
 
     # For Recipients, automatically enroll in the Recipient table so Document Owners immediately see them
-    if req_role == "RECIPIENT":
+    if req_role == "RECIPIENT" and pub_key_b64:
         owner = db.query(User).filter(User.role == "OWNER").first()
         owner_id = owner.id if owner else user.id
 
@@ -111,7 +114,6 @@ def register_user(req: RegisterRequest, db: Session = Depends(get_db)):
                 name=user.full_name,
                 email=clean_email,
                 public_key=pub_key_b64,
-                private_key=priv_key_b64,
                 status="ACTIVE",
             )
             db.add(rec)
@@ -119,7 +121,6 @@ def register_user(req: RegisterRequest, db: Session = Depends(get_db)):
         else:
             if not existing_rec.public_key:
                 existing_rec.public_key = pub_key_b64
-                existing_rec.private_key = priv_key_b64
                 db.commit()
 
     return user
@@ -137,16 +138,8 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # If recipient has no keypair yet, generate and save it now
-    if user.role == "RECIPIENT":
-        updated = False
-        if not user.public_key or not getattr(user, "private_key", None):
-            priv_obj, pub_obj = generate_x25519_keypair()
-            user.public_key = b64encode_str(x25519_public_to_bytes(pub_obj))
-            user.private_key = b64encode_str(x25519_private_to_bytes(priv_obj))
-            updated = True
-
-        # Ensure Recipient record exists
+    # Sync public key with recipient record if exists
+    if user.role == "RECIPIENT" and user.public_key:
         rec = db.query(Recipient).filter(Recipient.email.ilike(user.email)).first()
         if not rec:
             owner = db.query(User).filter(User.role == "OWNER").first()
@@ -157,19 +150,13 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
                 name=user.full_name,
                 email=user.email,
                 public_key=user.public_key,
-                private_key=user.private_key,
                 status="ACTIVE",
             )
             db.add(rec)
-            updated = True
-        elif not rec.public_key or not getattr(rec, "private_key", None):
-            rec.public_key = user.public_key
-            rec.private_key = user.private_key
-            updated = True
-
-        if updated:
             db.commit()
-            db.refresh(user)
+        elif not rec.public_key:
+            rec.public_key = user.public_key
+            db.commit()
 
     access_token = create_access_token(data={"sub": user.id, "email": user.email, "role": user.role})
     return {
@@ -179,61 +166,45 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
     }
 
 
-@router.get("/generate-keypair", response_model=KeyPairResponse)
-@router.post("/generate-keypair", response_model=KeyPairResponse)
-def generate_client_keypair():
-    """Generate a mathematically valid X25519 keypair."""
-    priv, pub = generate_x25519_keypair()
-    return {
-        "public_key": b64encode_str(x25519_public_to_bytes(pub)),
-        "private_key": b64encode_str(x25519_private_to_bytes(priv)),
-    }
-
-
-@router.get("/my-keys", response_model=KeyPairResponse)
+@router.get("/my-keys", response_model=PublicKeyResponse)
 def get_my_cryptographic_keys(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
-    """Retrieve the logged-in recipient's X25519 keys."""
-    if not current_user.public_key or not getattr(current_user, "private_key", None):
-        priv_obj, pub_obj = generate_x25519_keypair()
-        current_user.public_key = b64encode_str(x25519_public_to_bytes(pub_obj))
-        current_user.private_key = b64encode_str(x25519_private_to_bytes(priv_obj))
-        db.commit()
-        db.refresh(current_user)
-
+    """Retrieve the logged-in user's registered public key (Server NEVER stores or returns private keys)."""
     return {
         "public_key": current_user.public_key,
-        "private_key": current_user.private_key,
     }
 
 
-@router.post("/regenerate-my-keys", response_model=KeyPairResponse)
-def regenerate_my_cryptographic_keys(
+@router.post("/register-public-key", response_model=PublicKeyResponse)
+@router.put("/my-keys", response_model=PublicKeyResponse)
+def register_or_update_my_public_key(
+    req: UpdatePublicKeyRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Regenerate a fresh X25519 keypair for the logged-in user and update recipient records."""
-    priv_obj, pub_obj = generate_x25519_keypair()
-    pub_b64 = b64encode_str(x25519_public_to_bytes(pub_obj))
-    priv_b64 = b64encode_str(x25519_private_to_bytes(priv_obj))
+    """Register or update the recipient's client-generated X25519 public key."""
+    # Validate public key
+    try:
+        pub_bytes = b64decode_str(req.public_key)
+        if len(pub_bytes) != 32:
+            raise ValueError("Must be 32 bytes")
+        x25519_public_from_bytes(pub_bytes)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid X25519 public key: {str(e)}")
 
-    current_user.public_key = pub_b64
-    current_user.private_key = priv_b64
+    current_user.public_key = req.public_key
 
     # Also update any Recipient records matching this email
     recs = db.query(Recipient).filter(Recipient.email.ilike(current_user.email)).all()
     for r in recs:
-        r.public_key = pub_b64
-        r.private_key = priv_b64
+        r.public_key = req.public_key
 
     db.commit()
     db.refresh(current_user)
 
     return {
-        "public_key": pub_b64,
-        "private_key": priv_b64,
+        "public_key": current_user.public_key,
     }
 
 

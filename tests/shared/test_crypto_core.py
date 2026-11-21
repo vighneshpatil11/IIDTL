@@ -246,17 +246,17 @@ class TestPackages:
         serialized = pkg.serialize()
         restored = OfflineMultiDevicePackage.deserialize(serialized)
 
-        # DEV-1 decrypts successfully
-        dec1 = restored.decrypt_for_device(dev1_id, dev1_enc_priv)
+        # DEV-1 decrypts successfully with trusted owner public key
+        dec1 = restored.decrypt_for_device(dev1_id, dev1_enc_priv, trusted_owner_public_key=owner_sign_pub)
         assert dec1 == plaintext
 
-        # DEV-2 decrypts successfully
-        dec2 = restored.decrypt_for_device(dev2_id, dev2_enc_priv)
+        # DEV-2 decrypts successfully with trusted owner public key
+        dec2 = restored.decrypt_for_device(dev2_id, dev2_enc_priv, trusted_owner_public_key=owner_sign_pub)
         assert dec2 == plaintext
 
         # DEV-3 is unauthorized and fails
         with pytest.raises(AuthorizationError):
-            restored.decrypt_for_device(dev3_id, dev3_enc_priv)
+            restored.decrypt_for_device(dev3_id, dev3_enc_priv, trusted_owner_public_key=owner_sign_pub)
 
     def test_offline_package_tampered_signature_fails(self):
         plaintext = b"Test doc"
@@ -289,4 +289,4 @@ class TestPackages:
         pkg.original_filename = "hacked.pdf"
 
         with pytest.raises(SignatureVerificationError):
-            pkg.decrypt_for_device(dev1_id, dev1_enc_priv, verify_owner_sig=True)
+            pkg.decrypt_for_device(dev1_id, dev1_enc_priv, trusted_owner_public_key=owner_sign_pub, verify_owner_sig=True)

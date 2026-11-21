@@ -25,7 +25,8 @@ log = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: initialise DB safely — won't crash the app if DB is unreachable."""
+    """Startup: validate security config and initialise DB safely."""
+    settings.validate_security_config()
     try:
         init_db()
     except Exception as e:

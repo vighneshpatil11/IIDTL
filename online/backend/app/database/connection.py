@@ -2,6 +2,7 @@
 
 import logging
 import os
+import sys
 from typing import Generator
 
 from sqlalchemy import create_engine
@@ -45,21 +46,52 @@ def init_db() -> None:
 
     # Safe lightweight schema migrations for existing databases
     with engine.begin() as conn:
+        from sqlalchemy import text
+        # Purge any legacy private keys from database records to ensure strict key custody
+        for purge_stmt in [
+            "UPDATE users SET private_key = NULL WHERE private_key IS NOT NULL",
+            "UPDATE recipients SET private_key = NULL WHERE private_key IS NOT NULL",
+        ]:
+            try:
+                conn.execute(text(purge_stmt))
+            except Exception:
+                pass  # Column does not exist in new database schema
+
         for stmt in [
-            "ALTER TABLE users ADD COLUMN private_key TEXT",
-            "ALTER TABLE recipients ADD COLUMN private_key TEXT",
             "ALTER TABLE documents ADD COLUMN file_content_b64 TEXT",
             "ALTER TABLE distributions ADD COLUMN package_content_b64 TEXT",
         ]:
             try:
-                from sqlalchemy import text
                 conn.execute(text(stmt))
             except Exception:
                 pass  # Column already exists or table not ready
 
     owner_email = os.getenv("OWNER_EMAIL", "admin@docfortress.internal").strip().lower()
-    owner_pass = os.getenv("OWNER_PASSWORD", "AdminMaster2026!").strip()
     owner_name = os.getenv("OWNER_NAME", "Master Document Owner").strip()
+
+    # OWNER_PASSWORD must be explicitly set; never use a hardcoded default.
+    owner_pass = os.getenv("OWNER_PASSWORD", "").strip()
+    is_testing = "pytest" in sys.modules
+    is_production = os.getenv("ENVIRONMENT", "development").lower() == "production" or os.getenv("VERCEL") == "1"
+
+    if not owner_pass:
+        if is_testing:
+            owner_pass = "TestOwnerPass!99"  # Deterministic safe test-only password
+        elif is_production:
+            # Fail loudly — no silent insecure fallback in production
+            log.error(
+                "FATAL: OWNER_PASSWORD environment variable is not set. "
+                "Master owner account will NOT be seeded. Set OWNER_PASSWORD in your environment."
+            )
+            return
+        else:
+            # Development fallback: use a strong ephemeral password and warn loudly
+            import secrets as _secrets
+            owner_pass = _secrets.token_urlsafe(24)
+            log.warning(
+                "SECURITY WARNING: OWNER_PASSWORD env var not set. "
+                f"Generated ephemeral dev password for {owner_email}: {owner_pass}"
+            )
 
     from online.backend.app.database.models import User
     from online.backend.app.security.passwords import hash_password

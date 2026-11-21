@@ -18,12 +18,15 @@ class RecipientService:
         name: str,
         email: str,
         public_key: str,
-        private_key: Optional[str] = None,
     ) -> Recipient:
-        """Register a new recipient with their X25519 public key."""
+        """Register a new recipient with their client-generated X25519 public key."""
         # Validate public key format (must be 32 bytes base64)
+        if not public_key:
+            raise HTTPException(status_code=400, detail="Recipient public key is required.")
         try:
             pub_bytes = b64decode_str(public_key)
+            if len(pub_bytes) != 32:
+                raise ValueError("Public key must be exactly 32 bytes")
             x25519_public_from_bytes(pub_bytes)
         except Exception as e:
             raise HTTPException(
@@ -36,9 +39,8 @@ class RecipientService:
             id=recipient_id,
             owner_id=owner.id,
             name=name,
-            email=email,
+            email=email.strip().lower(),
             public_key=public_key,
-            private_key=private_key,
             status="ACTIVE",
         )
         db.add(rec)

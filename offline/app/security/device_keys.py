@@ -1,12 +1,15 @@
 """Cryptographic device identity, registration certificates, and keystore management."""
 
 import json
+import logging
+import os
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Tuple, Dict, Any, Optional
 
 from cryptography.hazmat.primitives.asymmetric import ed25519, x25519
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 from shared.crypto.signatures import (
     generate_ed25519_keypair,
@@ -31,7 +34,9 @@ from shared.crypto.primitives import (
 )
 from shared.utils.identifiers import generate_device_id
 from shared.utils.serialization import canonical_json_bytes, b64encode_str, b64decode_str
-from shared.crypto.exceptions import SignatureVerificationError, AuthorizationError
+from shared.crypto.exceptions import SignatureVerificationError, AuthorizationError, DecryptionError
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -101,7 +106,7 @@ class DeviceCertificate:
 
 
 class DeviceKeyManager:
-    """Manages local cryptographic identity and private key storage."""
+    """Manages local cryptographic identity and hardened keystore storage with Scrypt KDF."""
 
     @staticmethod
     def create_device_identity(device_name: str) -> Tuple[str, ed25519.Ed25519PrivateKey, x25519.X25519PrivateKey]:
@@ -158,21 +163,42 @@ class DeviceKeyManager:
         return cert
 
     @staticmethod
+    def derive_scrypt_key(passphrase: str, salt: bytes, n: int = 16384, r: int = 8, p: int = 1, length: int = 32) -> bytes:
+        """Derive cryptographic key using hardened Scrypt password derivation."""
+        kdf = Scrypt(
+            salt=salt,
+            length=length,
+            n=n,
+            r=r,
+            p=p,
+        )
+        return kdf.derive(passphrase.encode("utf-8"))
+
+    @classmethod
     def save_keystore(
+        cls,
         filepath: Path | str,
         passphrase: str,
         sign_priv: ed25519.Ed25519PrivateKey,
         enc_priv: x25519.X25519PrivateKey,
         device_id: str,
     ) -> None:
-        """Encrypt and persist private keys to local disk with passphrase-derived key."""
-        salt = b"offline-device-keystore-salt"
-        kek = derive_hkdf_key(
-            ikm=passphrase.encode("utf-8"),
+        """Encrypt and persist private keys with unique per-keystore random salt and Scrypt KDF."""
+        salt = os.urandom(16)
+        n_param = 16384  # 2**14
+        r_param = 8
+        p_param = 1
+        key_length = 32
+
+        kek = cls.derive_scrypt_key(
+            passphrase=passphrase,
             salt=salt,
-            info=b"device-keystore-aes-gcm",
-            length=32,
+            n=n_param,
+            r=r_param,
+            p=p_param,
+            length=key_length,
         )
+
         payload = {
             "device_id": device_id,
             "sign_priv": b64encode_str(ed25519_private_to_bytes(sign_priv)),
@@ -182,7 +208,15 @@ class DeviceKeyManager:
         ciphertext, nonce = encrypt_bytes_aes_gcm(canonical, kek, associated_data=device_id.encode("utf-8"))
 
         keystore_obj = {
-            "magic": "OFFLINE_KEYSTORE_V1",
+            "magic": "OFFLINE_KEYSTORE_V2",
+            "kdf": {
+                "algorithm": "scrypt",
+                "salt": b64encode_str(salt),
+                "n": n_param,
+                "r": r_param,
+                "p": p_param,
+                "length": key_length,
+            },
             "device_id": device_id,
             "nonce": b64encode_str(nonce),
             "ciphertext": b64encode_str(ciphertext),
@@ -190,29 +224,62 @@ class DeviceKeyManager:
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(keystore_obj, f, indent=2)
 
-    @staticmethod
+    @classmethod
     def load_keystore(
+        cls,
         filepath: Path | str,
         passphrase: str,
     ) -> Tuple[str, ed25519.Ed25519PrivateKey, x25519.X25519PrivateKey]:
-        """Decrypt private keys from local keystore."""
+        """Decrypt private keys from local keystore supporting Scrypt V2 and legacy V1 migration."""
         with open(filepath, "r", encoding="utf-8") as f:
             keystore_obj = json.load(f)
 
+        magic = keystore_obj.get("magic")
         device_id = keystore_obj["device_id"]
         nonce = b64decode_str(keystore_obj["nonce"])
         ciphertext = b64decode_str(keystore_obj["ciphertext"])
 
-        salt = b"offline-device-keystore-salt"
-        kek = derive_hkdf_key(
-            ikm=passphrase.encode("utf-8"),
-            salt=salt,
-            info=b"device-keystore-aes-gcm",
-            length=32,
-        )
-        decrypted_bytes = decrypt_bytes_aes_gcm(ciphertext, kek, nonce, associated_data=device_id.encode("utf-8"))
-        payload = json.loads(decrypted_bytes.decode("utf-8"))
+        if magic == "OFFLINE_KEYSTORE_V2":
+            kdf_meta = keystore_obj.get("kdf", {})
+            salt = b64decode_str(kdf_meta["salt"])
+            n = kdf_meta.get("n", 16384)
+            r = kdf_meta.get("r", 8)
+            p = kdf_meta.get("p", 1)
+            length = kdf_meta.get("length", 32)
 
+            kek = cls.derive_scrypt_key(
+                passphrase=passphrase,
+                salt=salt,
+                n=n,
+                r=r,
+                p=p,
+                length=length,
+            )
+        elif magic == "OFFLINE_KEYSTORE_V1":
+            log.warning("SECURITY WARNING: Decrypting legacy V1 keystore with static salt and HKDF. Migrate to V2 immediately.")
+            salt = b"offline-device-keystore-salt"
+            kek = derive_hkdf_key(
+                ikm=passphrase.encode("utf-8"),
+                salt=salt,
+                info=b"device-keystore-aes-gcm",
+                length=32,
+            )
+        else:
+            raise ValueError(f"Unrecognized keystore magic format: {magic}")
+
+        try:
+            decrypted_bytes = decrypt_bytes_aes_gcm(ciphertext, kek, nonce, associated_data=device_id.encode("utf-8"))
+        except Exception as e:
+            raise DecryptionError(f"Keystore decryption failed (incorrect passphrase or corrupted file): {e}")
+
+        payload = json.loads(decrypted_bytes.decode("utf-8"))
         sign_priv = ed25519_private_from_bytes(b64decode_str(payload["sign_priv"]))
         enc_priv = x25519_private_from_bytes(b64decode_str(payload["enc_priv"]))
         return device_id, sign_priv, enc_priv
+
+    @classmethod
+    def migrate_keystore_to_v2(cls, filepath: Path | str, passphrase: str) -> bool:
+        """Migrate a legacy V1 keystore to hardened V2 Scrypt format in-place."""
+        device_id, sign_priv, enc_priv = cls.load_keystore(filepath, passphrase)
+        cls.save_keystore(filepath, passphrase, sign_priv, enc_priv, device_id)
+        return True

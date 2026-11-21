@@ -30,22 +30,30 @@ class InvestigationService:
         extracted_wm_id: Optional[str] = None
         confidence: float = 0.0
         telemetry: Dict[str, Any] = {}
+        match_category: str = "NO_MATCH"
 
-        if suffix == ".pdf" or content.startswith(b"%PDF"):
+        if not content:
+            match_category = "CORRUPT_UNSUPPORTED"
+            telemetry = {"error": "Empty file content", "status": "EMPTY_FILE"}
+        elif suffix == ".pdf" or content.startswith(b"%PDF"):
             extracted_wm_id, confidence, telemetry = WatermarkEngine.extract_watermark_from_pdf(content)
+            match_category = telemetry.get("classification", "NO_MATCH")
         else:
             try:
                 text = content.decode("utf-8")
                 extracted_wm_id, confidence, telemetry = WatermarkEngine.extract_watermark_from_text(text)
+                match_category = telemetry.get("classification", "NO_MATCH")
             except Exception:
-                extracted_wm_id, confidence, telemetry = None, 0.0, {"error": "Binary or non-UTF8 text file"}
+                extracted_wm_id, confidence = None, 0.0
+                match_category = "CORRUPT_UNSUPPORTED"
+                telemetry = {"error": "Binary or non-UTF8 text file", "status": "CORRUPT_UNSUPPORTED"}
 
         investigation_id = f"INV-{generate_document_id().replace('DOC-', '')}"
         associated_recipient_info: Optional[Dict[str, Any]] = None
         doc_id: Optional[str] = None
 
         # 2. Correlate with protected forensic vault if watermark detected
-        if extracted_wm_id:
+        if extracted_wm_id and match_category in ("EXACT_MATCH", "PARTIAL_MATCH"):
             wm_record = db.query(WatermarkRecord).filter(
                 WatermarkRecord.watermark_id == extracted_wm_id
             ).first()
@@ -75,6 +83,10 @@ class InvestigationService:
                     }
                 except Exception as e:
                     telemetry["vault_decrypt_error"] = str(e)
+            else:
+                # Watermark was extracted from document, but no corresponding vault record found
+                match_category = "PARTIAL_MATCH"
+                telemetry["vault_lookup"] = "RECORD_NOT_FOUND_IN_VAULT"
 
         # 3. Persist investigation report
         rec_id = associated_recipient_info.get("recipient_id") if associated_recipient_info else None
@@ -91,18 +103,36 @@ class InvestigationService:
         db.commit()
 
         # 4. Formulate structured response with explicit attribution limitations
-        attribution_statement = (
-            "Forensic analysis detected a valid recipient watermark associating this leaked copy with "
-            f"recipient '{associated_recipient_info.get('recipient_name')}' (ID: {rec_id}). "
-            "IMPORTANT LIMITATION: This watermark cryptographically proves which distributed copy this document originates from. "
-            "It does not independently establish the physical identity of the person who extracted or exfiltrated the file."
-            if associated_recipient_info and confidence >= 0.8 else
-            "No matching recipient watermark could be conclusively identified. The document may be an unwatermarked original, "
-            "or the forensic markers may have been destroyed during conversion."
-        )
+        if match_category == "EXACT_MATCH" and associated_recipient_info:
+            attribution_statement = (
+                f"EXACT FORENSIC MATCH (Confidence: {confidence:.0%}): "
+                f"Watermark '{extracted_wm_id}' associates this document with the copy distributed to "
+                f"recipient '{associated_recipient_info.get('recipient_name')}' ({associated_recipient_info.get('recipient_email')}). "
+                "IMPORTANT LIMITATION: This watermark cryptographically identifies the distributed file copy. "
+                "It does not prove the physical identity of the individual who exfiltrated or leaked the document."
+            )
+        elif match_category == "PARTIAL_MATCH":
+            attribution_statement = (
+                f"UNCERTAIN / PARTIAL MATCH (Confidence: {confidence:.0%}): "
+                f"A potential watermark '{extracted_wm_id}' was detected with partial confidence, but cannot be "
+                "conclusively attributed. No accusation should be made based on this partial match."
+            )
+        elif match_category == "CORRUPT_UNSUPPORTED":
+            attribution_statement = (
+                "CORRUPTED OR UNSUPPORTED DOCUMENT: "
+                "The submitted file is damaged, unreadable, or not a supported document format. "
+                "Forensic extraction could not be completed."
+            )
+        else:
+            attribution_statement = (
+                "NO WATERMARK DETECTED: "
+                "No forensic watermark markers were found in this document. The file may be an unwatermarked original, "
+                "or the forensic markers may have been stripped during destructive re-encoding."
+            )
 
         return {
             "investigation_id": investigation_id,
+            "match_category": match_category,
             "leaked_file_hash": leaked_hash,
             "filename": filename,
             "watermark_detected": extracted_wm_id is not None,
