@@ -80,7 +80,22 @@ class Settings(BaseSettings):
 
     @property
     def DATABASE_URL(self) -> str:
-        env_db = os.getenv("DATABASE_URL")
+        # Check standard and Supabase Vercel Integration variable names
+        env_db = (
+            os.getenv("DATABASE_URL")
+            or os.getenv("POSTGRES_URL")
+            or os.getenv("POSTGRES_PRISMA_URL")
+            or os.getenv("POSTGRES_URL_NON_POOLING")
+        )
+        if not env_db:
+            # Check if individual connection components were injected by integration
+            pg_user = os.getenv("POSTGRES_USER")
+            pg_pwd = os.getenv("POSTGRES_PASSWORD")
+            pg_host = os.getenv("POSTGRES_HOST")
+            pg_db = os.getenv("POSTGRES_DATABASE", "postgres")
+            if pg_user and pg_pwd and pg_host:
+                env_db = f"postgresql://{pg_user}:{pg_pwd}@{pg_host}:5432/{pg_db}?sslmode=require"
+
         if env_db and env_db.strip():
             clean_url = env_db.strip()
             if clean_url.startswith("postgres://"):
