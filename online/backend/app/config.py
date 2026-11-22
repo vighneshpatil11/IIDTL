@@ -100,6 +100,9 @@ class Settings(BaseSettings):
             clean_url = env_db.strip()
             if clean_url.startswith("postgres://"):
                 clean_url = clean_url.replace("postgres://", "postgresql://", 1)
+            # Remove Prisma-specific query flags that psycopg/libpq reject
+            if "pgbouncer=true" in clean_url:
+                clean_url = clean_url.replace("&pgbouncer=true", "").replace("?pgbouncer=true&", "?").replace("?pgbouncer=true", "")
             return clean_url
         return f"sqlite:///{self.STORAGE_DIR / 'online_system.db'}"
 

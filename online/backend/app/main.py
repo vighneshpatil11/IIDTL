@@ -10,7 +10,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from online.backend.app.config import settings
-from online.backend.app.database.connection import init_db
+from online.backend.app.database.connection import init_db, get_db_diagnostics
 from online.backend.app.api import (
     auth,
     documents,
@@ -64,15 +64,19 @@ for prefix in ["/api/v1", "/v1"]:
     app.include_router(audit.router, prefix=prefix)
 
 
-# Health check
+# Health and Live Database Diagnostics
 @app.get("/health")
 @app.get("/api/health")
+@app.get("/api/v1/system/db-status")
+@app.get("/v1/system/db-status")
 def health_check():
+    diag = get_db_diagnostics()
     return {
-        "status": "healthy",
+        "status": "healthy" if diag.get("is_persistent") else "degraded",
         "service": settings.APP_NAME,
         "version": "1.0.0",
         "api_prefix": settings.API_V1_PREFIX,
+        "database": diag,
     }
 
 

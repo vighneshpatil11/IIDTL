@@ -27,6 +27,10 @@
         </div>
       </div>
       <div id="authStatus" class="flex items-center space-x-3">
+        <button id="dbStatusBadge" onclick="app.showDbStatusModal()" class="text-xs px-2.5 py-1 rounded-full border border-slate-700 bg-slate-800 text-slate-300 hover:border-slate-500 transition flex items-center space-x-1.5 font-mono cursor-pointer" title="Checking database connection...">
+          <span id="dbStatusDot" class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+          <span id="dbStatusText">Checking DB...</span>
+        </button>
         <span id="userBadge" class="hidden text-xs bg-slate-800 text-blue-300 px-3 py-1 rounded-full border border-slate-700"></span>
         <button id="logoutBtn" onclick="app.logout()" class="hidden text-xs bg-rose-600 hover:bg-rose-700 px-3 py-1 rounded text-white transition">Sign Out</button>
       </div>
@@ -682,6 +686,9 @@
       authMode: 'login',
 
       init() {
+        this.checkDbStatus();
+        setInterval(() => this.checkDbStatus(), 15000);
+
         if (this.token && this.user) {
           this.renderAuthenticatedUI();
           const isOwner = (this.user.role || '').toUpperCase() === 'OWNER';
@@ -689,6 +696,65 @@
         } else {
           this.switchTab('auth');
         }
+      },
+
+      async checkDbStatus() {
+        try {
+          const res = await fetch('/api/v1/system/db-status');
+          const data = await res.json();
+          const db = data.database || {};
+          const dot = document.getElementById('dbStatusDot');
+          const text = document.getElementById('dbStatusText');
+          const badge = document.getElementById('dbStatusBadge');
+          if (!dot || !text || !badge) return;
+
+          this.dbDiagnostics = db;
+
+          if (db.is_persistent) {
+            dot.className = 'w-2 h-2 rounded-full bg-emerald-400';
+            text.innerText = 'Supabase Connected';
+            badge.className = 'text-xs px-2.5 py-1 rounded-full border border-emerald-500/40 bg-emerald-950/40 text-emerald-300 hover:bg-emerald-900/50 transition flex items-center space-x-1.5 font-mono cursor-pointer';
+            badge.title = `Persistent PostgreSQL connected via ${db.driver || 'PostgreSQL'} (${db.host || 'cloud'})`;
+          } else {
+            dot.className = 'w-2 h-2 rounded-full bg-amber-400 animate-pulse';
+            text.innerText = 'Ephemeral DB (Reset on cold start)';
+            badge.className = 'text-xs px-2.5 py-1 rounded-full border border-amber-500/40 bg-amber-950/40 text-amber-300 hover:bg-amber-900/50 transition flex items-center space-x-1.5 font-mono cursor-pointer';
+            badge.title = db.last_error || 'Running on temporary SQLite in /tmp. Click to view diagnostics and setup instructions.';
+          }
+        } catch (err) {
+          console.warn('DB status check failed:', err);
+        }
+      },
+
+      showDbStatusModal() {
+        const db = this.dbDiagnostics || {};
+        let msg = `=== DOCFORTRESS LIVE DATABASE STATUS ===\n\n`;
+        msg += `Persistence: ${db.is_persistent ? 'PERSISTENT (Connected to Supabase PostgreSQL)' : 'EPHEMERAL (SQLite in /tmp - Data resets on cold start)'}\n`;
+        msg += `Engine: ${db.engine_type || 'Unknown'}\n`;
+        msg += `Driver: ${db.driver || 'None'}\n`;
+        msg += `Host: ${db.host || 'Local Container'}\n\n`;
+        msg += `--- Environment Variables in Vercel ---\n`;
+        if (db.env_vars) {
+          for (const [k, v] of Object.entries(db.env_vars)) {
+            msg += `${k}: ${v ? 'FOUND [✓]' : 'MISSING [✗]'}\n`;
+          }
+        }
+        if (db.counts) {
+          msg += `\n--- Persistent Table Records ---\n`;
+          for (const [k, v] of Object.entries(db.counts)) {
+            msg += `${k}: ${v}\n`;
+          }
+        }
+        if (db.last_error) {
+          msg += `\n--- Diagnostic Notice ---\n${db.last_error}\n`;
+        }
+        if (db.recent_probe_errors && db.recent_probe_errors.length) {
+          msg += `\n--- Connection Probe History ---\n` + db.recent_probe_errors.join('\n') + `\n`;
+        }
+        if (!db.is_persistent) {
+          msg += `\nHow to activate Supabase:\n1. Open Vercel -> Settings -> Environment Variables\n2. Add DATABASE_URL with your Supabase Transaction Pooler URI (port 6543) or verify Supabase integration.\n3. Redeploy the project on Vercel.`;
+        }
+        alert(msg);
       },
 
       /* ── Central fetch helper ─────────────────────────────────────────

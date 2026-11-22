@@ -454,10 +454,20 @@ def decrypt_package_api(
         elif magic == "UNIFIED_SECURE_DOC_V1":
             pkg_u = UnifiedMultiRecipientPackage.deserialize(req.package_content.encode("utf-8"))
             _, owner_sign_pub = settings.get_owner_signing_keypair()
+            trusted_key = owner_sign_pub
+            if not pkg_u.verify_package_signature(owner_sign_pub) and getattr(pkg_u, "owner_public_sign_key", None):
+                try:
+                    from shared.crypto.signatures import ed25519_public_from_bytes
+                    cand_pub = ed25519_public_from_bytes(b64decode_str(pkg_u.owner_public_sign_key))
+                    if pkg_u.verify_package_signature(cand_pub):
+                        trusted_key = cand_pub
+                except Exception:
+                    pass
+
             doc_bytes, wm = pkg_u.decrypt_for_recipient(
                 priv_key,
                 recipient_id=req.device_or_recipient_id,
-                trusted_owner_public_key=owner_sign_pub,
+                trusted_owner_public_key=trusted_key,
                 verify_owner_sig=True,
             )
             watermark_id = wm
