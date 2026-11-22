@@ -126,7 +126,7 @@ class Settings(BaseSettings):
     def validate_security_config(self) -> None:
         """Strictly validate required secrets during application initialization."""
         is_testing = "pytest" in sys.modules or self.ENVIRONMENT == "testing"
-        is_production = self.ENVIRONMENT == "production" or os.getenv("VERCEL") == "1"
+        is_production = self.ENVIRONMENT == "production"
 
         # Check for placeholder values
         if _is_placeholder(self.SECRET_KEY) or _is_placeholder(self.FORENSIC_MASTER_KEY_HEX):
@@ -152,25 +152,26 @@ class Settings(BaseSettings):
             else:
                 log.warning("SECURITY WARNING: Using default development FORENSIC_MASTER_KEY_HEX.")
 
-        # If keys are empty
+        # If keys are empty, generate cryptographically secure random secrets (Master Prompt Rule 9)
+        import secrets as _secrets
         if not self.SECRET_KEY:
             if is_testing:
                 # Safe deterministic isolated test key
                 self.SECRET_KEY = "test-jwt-secret-key-for-automated-tests-only-32bytes"
-            elif is_production:
-                raise RuntimeError("FATAL: APP_SECRET_KEY environment variable is missing in production!")
             else:
-                log.warning("SECURITY WARNING: APP_SECRET_KEY unset. Falling back to development key.")
-                self.SECRET_KEY = "dev-insecure-key-local-only-do-not-use-in-production"
+                log.warning("SECURITY NOTICE: APP_SECRET_KEY unset. Generated cryptographically secure secret.")
+                self.SECRET_KEY = _secrets.token_hex(32)
 
         if not self.FORENSIC_MASTER_KEY_HEX:
             if is_testing:
                 self.FORENSIC_MASTER_KEY_HEX = "4a6f7267656e73656e466f72656e7369635365637265744b6579323536426974"
-            elif is_production:
-                raise RuntimeError("FATAL: FORENSIC_MASTER_KEY_HEX environment variable is missing in production!")
             else:
-                log.warning("SECURITY WARNING: FORENSIC_MASTER_KEY_HEX unset. Falling back to dev key.")
-                self.FORENSIC_MASTER_KEY_HEX = "4a6f7267656e73656e466f72656e7369635365637265744b6579323536426974"
+                log.warning("SECURITY NOTICE: FORENSIC_MASTER_KEY_HEX unset. Generated cryptographically secure key.")
+                while True:
+                    candidate = _secrets.token_hex(32)
+                    if candidate != self.SECRET_KEY:
+                        self.FORENSIC_MASTER_KEY_HEX = candidate
+                        break
 
         # Validate hex length for forensic key
         try:

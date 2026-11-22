@@ -708,10 +708,35 @@
           this.logout('Session expired or authentication failed. Please sign in again.');
           throw new Error('Session expired — please sign in again.');
         }
-        const ct = res.headers.get('content-type') || '';
-        const data = ct.includes('application/json') ? await res.json() : await res.text();
-        if (!res.ok) throw new Error((data && data.detail) || `Server error ${res.status}`);
-        return data;
+        const text = await res.text();
+        let data = null;
+        try {
+          data = JSON.parse(text);
+        } catch (e) {
+          // Response is plaintext / HTML (e.g. server error)
+        }
+        if (!res.ok) {
+          const detail = (data && data.detail) || (text && text.trim().slice(0, 150)) || `Server error ${res.status}`;
+          throw new Error(detail);
+        }
+        return data !== null ? data : text;
+      },
+
+      /* ── Safe fetch that always parses text safely without JSON crashing ── */
+      async safeFetchJson(url, options = {}) {
+        const res = await fetch(url, options);
+        const text = await res.text();
+        let data = null;
+        try {
+          data = JSON.parse(text);
+        } catch (e) {
+          // Plaintext/HTML response
+        }
+        if (!res.ok) {
+          const detail = (data && data.detail) || (text && text.trim().slice(0, 150)) || `HTTP ${res.status}`;
+          throw new Error(detail);
+        }
+        return data || {};
       },
 
       /* ── Loading-state helpers ───────────────────────────────────────
@@ -751,7 +776,8 @@
 
         try {
           if (this.authMode === 'register') {
-            const fullName = document.getElementById('authName').value;
+            const fullName = (document.getElementById('authName').value || '').trim();
+            if (!fullName) return this.showAlert('Please enter your full name.', 'error');
             const role = document.getElementById('authRole').value;
             let clientPubKey = null;
             if (role === 'RECIPIENT') {
@@ -759,13 +785,11 @@
               localStorage.setItem('df_recipient_privkey', clientKeys.privateKeyB64);
               clientPubKey = clientKeys.publicKeyB64;
             }
-            const res = await fetch('/api/v1/auth/register', {
+            await this.safeFetchJson('/api/v1/auth/register', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ email, full_name: fullName, password, role, public_key: clientPubKey }),
             });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.detail || 'Registration failed');
             this.showAlert('Registration successful! Logging you in...', 'success');
             await this.performLogin(email, password);
           } else {
@@ -780,13 +804,11 @@
         const formData = new URLSearchParams();
         formData.append('username', email);
         formData.append('password', password);
-        const res = await fetch('/api/v1/auth/login', {
+        const data = await this.safeFetchJson('/api/v1/auth/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           body: formData,
         });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || 'Authentication failed');
 
         this.token = data.access_token;
         this.user = data.user;
@@ -798,7 +820,7 @@
           const clientKeys = generateX25519KeyPairClient();
           localStorage.setItem('df_recipient_privkey', clientKeys.privateKeyB64);
           try {
-            await fetch('/api/v1/auth/register-public-key', {
+            await this.safeFetchJson('/api/v1/auth/register-public-key', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.token}` },
               body: JSON.stringify({ public_key: clientKeys.publicKeyB64 }),
@@ -1069,7 +1091,7 @@
         const recipientIds = checkedBoxes.map(b => b.value);
 
         try {
-          const res = await fetch('/api/v1/distributions/create-unified', {
+          const data = await this.safeFetchJson('/api/v1/distributions/create-unified', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -1077,8 +1099,6 @@
             },
             body: JSON.stringify({ document_id: docId, recipient_ids: recipientIds }),
           });
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.detail || 'Unified distribution failed');
           this.showAlert(`Created single unified encrypted container for ${data.authorized_recipients_count} recipients!`, 'success');
 
           const card = document.getElementById('unifiedResultCard');
@@ -1116,7 +1136,7 @@
         const recipientIds = checkedBoxes.map(b => b.value);
 
         try {
-          const res = await fetch('/api/v1/distributions/create', {
+          const data = await this.safeFetchJson('/api/v1/distributions/create', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -1124,8 +1144,6 @@
             },
             body: JSON.stringify({ document_id: docId, recipient_ids: recipientIds }),
           });
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.detail || 'Distribution failed');
           this.showAlert(`Generated ${data.distributed_count} watermarked, encrypted packages!`, 'success');
 
           // Render distribution list
@@ -1158,13 +1176,11 @@
         formData.append('file', input.files[0]);
 
         try {
-          const res = await fetch('/api/v1/investigation/analyze', {
+          const data = await this.safeFetchJson('/api/v1/investigation/analyze', {
             method: 'POST',
             headers: { 'Authorization': `Bearer ${this.token}` },
             body: formData,
           });
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.detail || 'Investigation failed');
 
           const card = document.getElementById('investigationResultCard');
           card.classList.remove('hidden');
@@ -1265,7 +1281,7 @@
           const clientKeys = generateX25519KeyPairClient();
           localStorage.setItem('df_recipient_privkey', clientKeys.privateKeyB64);
 
-          const res = await fetch('/api/v1/auth/register-public-key', {
+          await this.safeFetchJson('/api/v1/auth/register-public-key', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -1273,8 +1289,6 @@
             },
             body: JSON.stringify({ public_key: clientKeys.publicKeyB64 }),
           });
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.detail || 'Public key update failed');
 
           const inputEl = document.getElementById('clientPrivKeyInput');
           if (inputEl) inputEl.value = clientKeys.privateKeyB64;
@@ -1343,7 +1357,7 @@
       async executeDecryption(pkgText, privKey) {
         try {
           this.showAlert('Verifying cryptographic envelope and decrypting...', 'info');
-          const res = await fetch('/api/v1/distributions/decrypt-package', {
+          const data = await this.safeFetchJson('/api/v1/distributions/decrypt-package', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1351,8 +1365,6 @@
               private_key: privKey,
             }),
           });
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.detail || 'Decryption failed');
 
           const container = document.getElementById('decryptedViewerContainer');
           const preview = document.getElementById('decryptedContentPreview');

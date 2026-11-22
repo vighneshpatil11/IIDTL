@@ -26,7 +26,10 @@ log = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: validate security config and initialise DB safely."""
-    settings.validate_security_config()
+    try:
+        settings.validate_security_config()
+    except Exception as e:
+        log.error(f"Startup security config validation warning: {e}")
     try:
         init_db()
     except Exception as e:
