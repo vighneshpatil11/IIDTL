@@ -37,8 +37,9 @@ class DocumentService:
 
         file_size = dest_path.stat().st_size
         file_hash = sha256_file(dest_path)
+        raw_bytes = dest_path.read_bytes()
 
-        # Do not store confidential document bytes in server database (only logs and metadata)
+        # Persist document bytes in database so the full original document is preserved across serverless container restarts
         doc = Document(
             id=doc_id,
             owner_id=owner.id,
@@ -46,7 +47,7 @@ class DocumentService:
             original_sha256=file_hash,
             file_size=file_size,
             storage_path=str(dest_path),
-            file_content_b64=None,
+            file_content_b64=b64encode_str(raw_bytes),
             status="ACTIVE",
         )
         db.add(doc)
