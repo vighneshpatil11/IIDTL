@@ -8,6 +8,7 @@ from typing import Generator
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.pool import NullPool
 
 from online.backend.app.config import settings
 from online.backend.app.database.models import Base
@@ -32,10 +33,11 @@ def _make_engine():
         kwargs["connect_args"] = {"check_same_thread": False}
         return create_engine(db_url, **kwargs)
 
-    # PostgreSQL (Neon / Supabase etc.)
+    # PostgreSQL (Supabase / Neon etc.)
+    # NullPool is the recommended pattern for serverless functions (Vercel)
+    # to avoid stale socket timeouts and exhaustion of connection pools.
+    kwargs["poolclass"] = NullPool
     kwargs["pool_pre_ping"] = True
-    kwargs["pool_size"] = 1
-    kwargs["max_overflow"] = 0
     try:
         eng = create_engine(db_url, **kwargs)
         with eng.connect() as conn:
