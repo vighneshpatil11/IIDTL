@@ -129,7 +129,24 @@ class Settings(BaseSettings):
             except Exception as e:
                 log.error(f"Failed to load stored owner key file: {e}")
 
-        # Generate persistent keypair and save to STORAGE_DIR
+        # Deterministic persistent key derived from SECRET_KEY for serverless stability
+        if self.SECRET_KEY and not _is_placeholder(self.SECRET_KEY):
+            try:
+                from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+                from cryptography.hazmat.primitives import hashes
+                hkdf = HKDF(
+                    algorithm=hashes.SHA256(),
+                    length=32,
+                    salt=b"docfortress-owner-signing-v1",
+                    info=b"docfortress-persistent-ed25519-owner-key",
+                )
+                derived_seed = hkdf.derive(self.SECRET_KEY.encode("utf-8"))
+                priv = ed25519_private_from_bytes(derived_seed)
+                return priv, priv.public_key()
+            except Exception as e:
+                log.error(f"Failed to derive persistent owner signing key: {e}")
+
+        # Fallback: Generate fresh keypair and save to STORAGE_DIR
         priv, pub = generate_ed25519_keypair()
         try:
             self.STORAGE_DIR.mkdir(parents=True, exist_ok=True)

@@ -1357,9 +1357,11 @@
       async executeDecryption(pkgText, privKey) {
         try {
           this.showAlert('Verifying cryptographic envelope and decrypting...', 'info');
+          const headers = { 'Content-Type': 'application/json' };
+          if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
           const data = await this.safeFetchJson('/api/v1/distributions/decrypt-package', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: headers,
             body: JSON.stringify({
               package_content: pkgText,
               private_key: privKey,

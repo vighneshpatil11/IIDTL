@@ -466,14 +466,17 @@ def decrypt_package_api(
                     recipient_id = slot.get("recipient_id")
                     break
 
-            AuditService.log_event(
-                db=db,
-                document_id=doc_id,
-                recipient_id=recipient_id or "UNIFIED_SLOT",
-                event_type="DECRYPT_SUCCESS",
-                result="SUCCESS",
-                user_agent="Unified Container Decrypt & Download",
-            )
+            try:
+                AuditService.log_event(
+                    db=db,
+                    document_id=doc_id,
+                    recipient_id=recipient_id,
+                    event_type="DECRYPT_SUCCESS",
+                    result="SUCCESS",
+                    user_agent="Unified Container Decrypt & Download",
+                )
+            except Exception:
+                pass
         elif magic == "SECURE_DOC_OFFLINE_V1":
             pkg_off = OfflineMultiDevicePackage.deserialize(req.package_content.encode("utf-8"))
             if not req.device_or_recipient_id:
@@ -482,6 +485,8 @@ def decrypt_package_api(
         else:
             raise HTTPException(status_code=400, detail=f"Unsupported package magic: {magic}")
 
+    except HTTPException:
+        raise
     except Exception as e:
         err_msg = str(e)
         if (
@@ -495,17 +500,25 @@ def decrypt_package_api(
                 "slot in this package. Please verify that this document was distributed to your email address "
                 "and that your private key matches the public key enrolled with the Document Owner."
             )
+        elif "signature verification" in err_msg.lower():
+            detail = (
+                "Cryptographic verification warning: Package signature verification failed against the current "
+                "trusted Document Owner signing key. The package may have been altered or issued by a different authority."
+            )
         else:
             detail = f"Decryption failed: {err_msg}"
 
-        AuditService.log_event(
-            db=db,
-            document_id=doc_id,
-            recipient_id=recipient_id,
-            event_type="DECRYPT_FAILED",
-            result="DENIED_ERROR",
-            user_agent=f"Decrypt failed: {detail}",
-        )
+        try:
+            AuditService.log_event(
+                db=db,
+                document_id=doc_id,
+                recipient_id=recipient_id,
+                event_type="DECRYPT_FAILED",
+                result="DENIED_ERROR",
+                user_agent=f"Decrypt failed: {detail[:200]}",
+            )
+        except Exception:
+            pass
         raise HTTPException(status_code=403, detail=detail)
 
     is_pdf = filename.lower().endswith(".pdf")

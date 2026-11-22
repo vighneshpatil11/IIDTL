@@ -85,6 +85,9 @@ def init_db() -> None:
             for stmt in [
                 "ALTER TABLE documents ADD COLUMN file_content_b64 TEXT",
                 "ALTER TABLE distributions ADD COLUMN package_content_b64 TEXT",
+                "ALTER TABLE access_logs DROP CONSTRAINT IF EXISTS access_logs_document_id_fkey",
+                "ALTER TABLE access_logs DROP CONSTRAINT IF EXISTS access_logs_recipient_id_fkey",
+                "ALTER TABLE access_logs ALTER COLUMN document_id DROP NOT NULL",
             ]:
                 try:
                     conn.execute(text(stmt))
